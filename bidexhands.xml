@@ -1,0 +1,41 @@
+<mujoco model="shadow_hand_cube_environment">
+    <!-- <option gravity="0 0 -9.81"/> --> <!-- timestep="0.002" -->
+    <!-- Include the Shadow Hand asset -->
+    <include file="left_hand.xml"/> 
+    <include file="right_hand.xml"/>
+    <include file="cube.xml"/>
+    <!-- <include file="hello.xml"/> Test how include works in the main file. Test using gravity -->
+    
+    <!-- <asset> -->
+        <!-- Importing the Shadow Hand asset -->
+        <!-- <mesh file="shadow_hand/left_hand.xml"/> -->
+        <!-- Importing the 3x3x3 Cube asset -->
+        <!-- <mesh file="C:/Users/aathi/OneDrive - Northeastern University/Desktop/Lab/MARL/Masters_Project/mujoco/model/cube/cube_3x3x3.xml"/> -->
+    <!-- </asset> -->
+
+    <!-- Define the world body -->
+    <worldbody>
+        <light diffuse=".5 .5 .5" pos="0 0 3" dir="0 0 -1"/>
+        <geom type="plane" size="1 1 0.1" rgba="0.82 0.71 0.55 1.0"/>
+        <!-- Define the Shadow Hand body -->
+        <!-- <body name="shadow_hand" pos="0 0 0">-->
+            <!-- Include the hand asset -->
+            <!-- C:/Users/aathi/OneDrive - Northeastern University/Desktop/Lab/MARL/Masters_Project/mujoco_menagerie/-->
+            <!-- <include file="shadow_hand/left_hand.xml"/> -->
+            <!-- Optional joint configurations or additional settings -->
+            <!-- <joint name="wrist_joint" type="hinge" pos="0 0 0" axis="0 0 1" range="-180 180"/>-->
+        <!-- </body> --> 
+
+        <!-- Define a cube body -->
+        <!-- <body name="cube" pos="0.5 0 0.05">
+            <geom type="box" size="0.05 0.05 0.05" rgba="1 0 0 1"/>
+            <include file="C:/Users/aathi/OneDrive - Northeastern University/Desktop/Lab/MARL/Masters_Project/mujoco/model/cube/cube_3x3x3.xml"/>
+        </body> -->
+
+        <!-- Ground plane -->
+        <!-- <geom name="floor" type="plane" size="10 10 0.1" pos="0 0 0" rgba="0.4 0.7 0.3 1"/> -->
+        
+    </worldbody>
+
+    <!-- Simulation options -->
+</mujoco>
