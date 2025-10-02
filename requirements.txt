@@ -1,0 +1,18 @@
+# Core dependencies for PPO training on bidexhands manipulation
+torch>=1.9.0
+numpy>=1.21.0
+mujoco>=2.3.0
+matplotlib>=3.5.0
+tqdm>=4.64.0
+
+# Optional dependencies for enhanced functionality
+wandb>=0.15.0       # For experiment tracking (primary logging)
+tensorboard>=2.8.0  # For training visualization (optional)
+gym>=0.21.0         # For environment interface compatibility
+opencv-python>=4.5.0  # For image processing if needed
+
+# Development dependencies (optional)
+pytest>=6.0.0       # For testing
+black>=22.0.0       # For code formatting
+flake8>=4.0.0       # For linting
+

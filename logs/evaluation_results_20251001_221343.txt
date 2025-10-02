@@ -1,0 +1,6 @@
+Training completed at: 2025-10-01 22:13:39.315473
+Training time: 0:00:33.638295
+Final model: saved_models/ppo_bidexhands_final.pth
+Evaluation results:
+Average Reward: 16.19 ± 0.00
+Average Length: 201.00

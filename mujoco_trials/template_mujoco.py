@@ -4,7 +4,7 @@ import numpy as np
 import os
 
 xml_path = 'hello.xml' #xml file (assumes this is in the same folder as this file)
-simend = 15 #simulation time
+simend = 60 #simulation time
 print_camera_config = 0 #set to 1 to print camera config
                         #this is useful for initializing view of the model)
 
@@ -58,6 +58,7 @@ def mouse_move(window, xpos, ypos):
     lasty = ypos
 
     # no buttons down: nothing to do
+    # Aathira : What is this for?
     if (not button_left) and (not button_middle) and (not button_right):
         return
 
@@ -85,6 +86,7 @@ def mouse_move(window, xpos, ypos):
     else:
         action = mj.mjtMouse.mjMOUSE_ZOOM
 
+    # Aathira : Why the height is used?
     mj.mjv_moveCamera(model, action, dx/height,
                       dy/height, scene, cam)
 
@@ -102,9 +104,10 @@ xml_path = abspath
 model = mj.MjModel.from_xml_path(xml_path)  # MuJoCo model
 data = mj.MjData(model)                # MuJoCo data
 cam = mj.MjvCamera()                        # Abstract camera
-opt = mj.MjvOption()                        # visualization options
+opt = mj.MjvOption()                        # visualization options Aathira : What is this?
 
 # Init GLFW, create window, make OpenGL context current, request v-sync
+# Aathira : What is GLFW?
 glfw.init()
 window = glfw.create_window(1200, 900, "Demo", None, None)
 glfw.make_context_current(window)
@@ -113,8 +116,8 @@ glfw.swap_interval(1)
 # initialize visualization data structures
 mj.mjv_defaultCamera(cam)
 mj.mjv_defaultOption(opt)
-scene = mj.MjvScene(model, maxgeom=10000)
-context = mj.MjrContext(model, mj.mjtFontScale.mjFONTSCALE_150.value)
+scene = mj.MjvScene(model, maxgeom=10000) # Aathira : What is maxgeom?
+context = mj.MjrContext(model, mj.mjtFontScale.mjFONTSCALE_150.value) # Aathira : What is this?
 
 # install GLFW mouse and keyboard callbacks
 glfw.set_key_callback(window, keyboard)
@@ -143,16 +146,16 @@ while not glfw.window_should_close(window):
     if (data.time>=simend):
         break
 
-    # get framebuffer viewport
-    viewport_width, viewport_height = glfw.get_framebuffer_size(
-        window)
-    viewport = mj.MjrRect(0, 0, viewport_width, viewport_height)
-
     #print camera configuration (help to initialize the view)
     if (print_camera_config==1):
         print('cam.azimuth =',cam.azimuth,';','cam.elevation =',cam.elevation,';','cam.distance = ',cam.distance)
         print('cam.lookat =np.array([',cam.lookat[0],',',cam.lookat[1],',',cam.lookat[2],'])')
 
+    # get framebuffer viewport
+    viewport_width, viewport_height = glfw.get_framebuffer_size(
+        window)
+    viewport = mj.MjrRect(0, 0, viewport_width, viewport_height)
+    
     # Update scene and render
     mj.mjv_updateScene(model, data, opt, None, cam,
                        mj.mjtCatBit.mjCAT_ALL.value, scene)

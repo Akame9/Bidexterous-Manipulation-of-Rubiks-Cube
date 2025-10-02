@@ -1,0 +1,53 @@
+Weights & Biases initialized: https://wandb.ai/pillai-aat-Northeastern%20University/rubiks-cube-ppo/runs/w6mls7yf
+Wandb run info saved to: logs/wandb_run_20251001_223311.txt
+Starting training for 50 episodes...
+Model will be saved to saved_models/ppo_bidexhands
+Training Episodes:   0%|                                                                                                                     | 0/50 [00:00<?, ?episode/s]C:\Users\aathi\OneDrive - Northeastern University\Desktop\Lab\MARL\Masters_Project\Mujoco_tutorial\primitive_controller\ppo.py:188: UserWarning: Creating a tensor from a list of numpy.ndarrays is extremely slow. Please consider converting the list to a single numpy.ndarray with numpy.array() before converting to a tensor. (Triggered internally at ..\torch\csrc\utils\tensor_new.cpp:278.)
+  states = torch.FloatTensor(self.memory.states).to(self.device)
+C:\Users\aathi\OneDrive - Northeastern University\Desktop\Lab\MARL\Masters_Project\Mujoco_tutorial\primitive_controller\ppo.py:234: UserWarning: Using a target size (torch.Size([200, 40000])) that is different to the input size (torch.Size([200, 1])). This will likely lead to incorrect results due to broadcasting. Please ensure they have the same size.
+  value_loss = F.mse_loss(values, batch_returns)
+
+
+
+Training Episodes:  20%|██████████                                        | 10/50 [00:20<03:05,  4.64s/episode, Avg Reward=16.87, Avg Length=200.0, Current Reward=16.75]
+Training Episodes:  20%|██████████                                        | 10/50 [00:20<03:05,  4.64s/episode, Avg Reward=16.87, Avg Length=200.0, Current Reward=16.75]C:\Users\aathi\OneDrive - Northeastern University\Desktop\Lab\MARL\Masters_Project\Mujoco_tutorial\primitive_controller\ppo.py:234: UserWarning: Using a target size (torch.Size([200, 40000])) that is different to the input size (torch.Size([200, 1])). This will likely lead to incorrect results due to broadcasting. Please ensure they have the same size.
+  value_loss = F.mse_loss(values, batch_returns)
+
+
+Training Episodes:  36%|██████████████████                                | 18/50 [00:27<00:30,  1.06episode/s, Avg Reward=16.76, Avg Length=200.0, Current Reward=16.71]
+
+
+
+
+Training Episodes:  60%|██████████████████████████████                    | 30/50 [00:35<00:14,  1.41episode/s, Avg Reward=16.70, Avg Length=200.0, Current Reward=16.63]
+
+
+
+
+Training Episodes:  80%|████████████████████████████████████████          | 40/50 [00:43<00:07,  1.27episode/s, Avg Reward=16.61, Avg Length=200.0, Current Reward=16.63]
+
+
+
+Training Episodes:  96%|████████████████████████████████████████████████  | 48/50 [00:49<00:01,  1.27episode/s, Avg Reward=16.61, Avg Length=200.0, Current Reward=16.51]
+Model saved to saved_models/ppo_bidexhands_final.pth
+Training completed in 0:00:50.418960
+Final model saved to saved_models/ppo_bidexhands_final.pth
+Training failed with error: [WinError 1314] A required privilege is not held by the client: 'C:\\Users\\aathi\\OneDrive - Northeastern University\\Desktop\\Lab\\MARL\\Masters_Project\\Mujoco_tutorial\\saved_models\\ppo_bidexhands_final.pth' -> 'C:\\Users\\aathi\\OneDrive - Northeastern University\\Desktop\\Lab\\MARL\\Masters_Project\\Mujoco_tutorial\\wandb\\run-20251001_223300-w6mls7yf\\files\\saved_models\\ppo_bidexhands_final.pth'
+Training Episodes: 100%|██████████████████████████████████████████████████| 50/50 [00:50<00:00,  1.01s/episode, Avg Reward=16.61, Avg Length=200.0, Current Reward=16.63]
+Traceback (most recent call last):
+  File "C:\Users\aathi\OneDrive - Northeastern University\Desktop\Lab\MARL\Masters_Project\Mujoco_tutorial\train_bidexhands_ppo.py", line 430, in main
+    wandb.save(final_model_path)
+  File "C:\Users\aathi\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages\wandb\sdk\wandb_run.py", line 371, in wrapper_fn
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\aathi\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages\wandb\sdk\wandb_run.py", line 361, in wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\aathi\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages\wandb\sdk\wandb_run.py", line 1936, in save
+    return self._save(
+           ^^^^^^^^^^^
+  File "C:\Users\aathi\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages\wandb\sdk\wandb_run.py", line 1996, in _save
+    wandb_path.symlink_to(path)
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\pathlib.py", line 1386, in symlink_to
+    os.symlink(target, self, target_is_directory)
+OSError: [WinError 1314] A required privilege is not held by the client: 'C:\\Users\\aathi\\OneDrive - Northeastern University\\Desktop\\Lab\\MARL\\Masters_Project\\Mujoco_tutorial\\saved_models\\ppo_bidexhands_final.pth' -> 'C:\\Users\\aathi\\OneDrive - Northeastern University\\Desktop\\Lab\\MARL\\Masters_Project\\Mujoco_tutorial\\wandb\\run-20251001_223300-w6mls7yf\\files\\saved_models\\ppo_bidexhands_final.pth'

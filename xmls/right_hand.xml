@@ -1,5 +1,5 @@
 <mujoco model="right_shadow_hand">
-  <compiler meshdir="assets" autolimits="true"/> <!-- angle="radian" -->
+  <compiler meshdir="assets" autolimits="true" angle="radian"/> <!-- angle="radian" -->
 
   <option cone="elliptic" impratio="10" /> 
 
@@ -94,7 +94,7 @@
   </asset>
 
   <worldbody>
-    <body name="rh_forearm" childclass="right_hand" quat="0.5 0.5 0.5 0.5" pos="0 -0.2 0.25">
+    <body name="rh_forearm" childclass="right_hand" quat="0.5 0.5 0.5 0.5" pos="0 -0.1 0.25">
       <inertial mass="3" pos="0 0 0.09" diaginertia="0.0138 0.0138 0.00744"/>
       <geom class="right_plastic_visual" mesh="right_forearm_0" material="right_gray"/>
       <geom class="right_plastic_visual" mesh="right_forearm_1"/>

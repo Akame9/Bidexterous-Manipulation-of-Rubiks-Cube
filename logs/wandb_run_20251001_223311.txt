@@ -1,0 +1,28 @@
+Weights & Biases Run Information
+==================================================
+Run Name: ppo_rubiks_20251001_223257
+Run ID: w6mls7yf
+Project: rubiks-cube-ppo
+URL: https://wandb.ai/pillai-aat-Northeastern%20University/rubiks-cube-ppo/runs/w6mls7yf
+Started: 2025-10-01 22:33:11
+
+Configuration:
+--------------------
+env_name: RubiksCubeEnvironment
+state_dim: 310
+action_dim: 46
+max_episode_steps: 200
+num_episodes: 50
+learning_rate: 0.0003
+gamma: 0.99
+eps_clip: 0.2
+k_epochs: 10
+entropy_coef: 0.01
+value_coef: 0.5
+batch_size: 128
+device: auto
+force_cpu: False
+save_interval: 100
+log_interval: 10
+
+To view this run later, visit: https://wandb.ai/pillai-aat-Northeastern%20University/rubiks-cube-ppo/runs/w6mls7yf

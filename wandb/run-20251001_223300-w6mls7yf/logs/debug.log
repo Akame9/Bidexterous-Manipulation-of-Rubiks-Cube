@@ -1,0 +1,36 @@
+2025-10-01 22:33:00,325 INFO    MainThread:30320 [wandb_setup.py:_flush():76] Current SDK version is 0.16.5
+2025-10-01 22:33:00,325 INFO    MainThread:30320 [wandb_setup.py:_flush():76] Configure stats pid to 30320
+2025-10-01 22:33:00,325 INFO    MainThread:30320 [wandb_setup.py:_flush():76] Loading settings from C:\Users\aathi\.config\wandb\settings
+2025-10-01 22:33:00,326 INFO    MainThread:30320 [wandb_setup.py:_flush():76] Loading settings from C:\Users\aathi\OneDrive - Northeastern University\Desktop\Lab\MARL\Masters_Project\Mujoco_tutorial\wandb\settings
+2025-10-01 22:33:00,326 INFO    MainThread:30320 [wandb_setup.py:_flush():76] Loading settings from environment variables: {}
+2025-10-01 22:33:00,326 INFO    MainThread:30320 [wandb_setup.py:_flush():76] Applying setup settings: {'_disable_service': False}
+2025-10-01 22:33:00,326 INFO    MainThread:30320 [wandb_setup.py:_flush():76] Inferring run settings from compute environment: {'program_relpath': 'train_bidexhands_ppo.py', 'program_abspath': 'C:\\Users\\aathi\\OneDrive - Northeastern University\\Desktop\\Lab\\MARL\\Masters_Project\\Mujoco_tutorial\\train_bidexhands_ppo.py', 'program': 'C:\\Users\\aathi\\OneDrive - Northeastern University\\Desktop\\Lab\\MARL\\Masters_Project\\Mujoco_tutorial\\train_bidexhands_ppo.py'}
+2025-10-01 22:33:00,326 INFO    MainThread:30320 [wandb_setup.py:_flush():76] Applying login settings: {}
+2025-10-01 22:33:00,326 INFO    MainThread:30320 [wandb_init.py:_log_setup():527] Logging user logs to C:\Users\aathi\OneDrive - Northeastern University\Desktop\Lab\MARL\Masters_Project\Mujoco_tutorial\wandb\run-20251001_223300-w6mls7yf\logs\debug.log
+2025-10-01 22:33:00,326 INFO    MainThread:30320 [wandb_init.py:_log_setup():528] Logging internal logs to C:\Users\aathi\OneDrive - Northeastern University\Desktop\Lab\MARL\Masters_Project\Mujoco_tutorial\wandb\run-20251001_223300-w6mls7yf\logs\debug-internal.log
+2025-10-01 22:33:00,327 INFO    MainThread:30320 [wandb_init.py:init():567] calling init triggers
+2025-10-01 22:33:00,327 INFO    MainThread:30320 [wandb_init.py:init():574] wandb.init called with sweep_config: {}
+config: {'env_name': 'RubiksCubeEnvironment', 'state_dim': 310, 'action_dim': 46, 'max_episode_steps': 200, 'num_episodes': 50, 'learning_rate': 0.0003, 'gamma': 0.99, 'eps_clip': 0.2, 'k_epochs': 10, 'entropy_coef': 0.01, 'value_coef': 0.5, 'batch_size': 128, 'device': 'auto', 'force_cpu': False, 'save_interval': 100, 'log_interval': 10}
+2025-10-01 22:33:00,327 INFO    MainThread:30320 [wandb_init.py:init():617] starting backend
+2025-10-01 22:33:00,327 INFO    MainThread:30320 [wandb_init.py:init():621] setting up manager
+2025-10-01 22:33:00,332 INFO    MainThread:30320 [backend.py:_multiprocessing_setup():105] multiprocessing start_methods=spawn, using: spawn
+2025-10-01 22:33:00,381 INFO    MainThread:30320 [wandb_init.py:init():629] backend started and connected
+2025-10-01 22:33:00,389 INFO    MainThread:30320 [wandb_init.py:init():721] updated telemetry
+2025-10-01 22:33:00,481 INFO    MainThread:30320 [wandb_init.py:init():754] communicating run to backend with 90.0 second timeout
+2025-10-01 22:33:01,262 INFO    MainThread:30320 [wandb_run.py:_on_init():2344] communicating current version
+2025-10-01 22:33:01,788 INFO    MainThread:30320 [wandb_run.py:_on_init():2353] got version response upgrade_message: "wandb version 0.22.1 is available!  To upgrade, please run:\n $ pip install wandb --upgrade"
+
+2025-10-01 22:33:01,788 INFO    MainThread:30320 [wandb_init.py:init():805] starting run threads in backend
+2025-10-01 22:33:11,307 INFO    MainThread:30320 [wandb_run.py:_console_start():2323] atexit reg
+2025-10-01 22:33:11,307 INFO    MainThread:30320 [wandb_run.py:_redirect():2178] redirect: wrap_raw
+2025-10-01 22:33:11,307 INFO    MainThread:30320 [wandb_run.py:_redirect():2243] Wrapping output streams.
+2025-10-01 22:33:11,307 INFO    MainThread:30320 [wandb_run.py:_redirect():2268] Redirects installed.
+2025-10-01 22:33:11,308 INFO    MainThread:30320 [wandb_init.py:init():848] run started, returning control to user process
+2025-10-01 22:33:11,308 INFO    MainThread:30320 [wandb_watch.py:watch():51] Watching
+2025-10-01 22:34:01,755 INFO    MainThread:30320 [wandb_run.py:_finish():2052] finishing run pillai-aat-Northeastern University/rubiks-cube-ppo/w6mls7yf
+2025-10-01 22:34:01,755 INFO    MainThread:30320 [wandb_run.py:_atexit_cleanup():2292] got exitcode: 0
+2025-10-01 22:34:01,756 INFO    MainThread:30320 [wandb_run.py:_restore():2275] restore
+2025-10-01 22:34:01,756 INFO    MainThread:30320 [wandb_run.py:_restore():2281] restore done
+2025-10-01 22:34:09,183 INFO    MainThread:30320 [wandb_run.py:_footer_history_summary_info():3920] rendering history
+2025-10-01 22:34:09,186 INFO    MainThread:30320 [wandb_run.py:_footer_history_summary_info():3952] rendering summary
+2025-10-01 22:34:09,192 INFO    MainThread:30320 [wandb_run.py:_footer_sync_info():3879] logging synced files

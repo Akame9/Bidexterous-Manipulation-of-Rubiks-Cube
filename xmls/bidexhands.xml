@@ -3,7 +3,7 @@
     <!-- Include the Shadow Hand asset -->
     <include file="left_hand.xml"/> 
     <include file="right_hand.xml"/>
-    <include file="cube.xml"/>
+    <include file="cube_rad.xml"/>
     <!-- <include file="hello.xml"/> Test how include works in the main file. Test using gravity -->
     
     <!-- <asset> -->
