@@ -1,4 +1,5 @@
 <mujoco model="shadow_hand_cube_environment">
+  <compiler meshdir="../assets" autolimits="true" angle="radian" texturedir="../assets"/>
     <!-- <option gravity="0 0 -9.81"/> --> <!-- timestep="0.002" -->
     <!-- Include the Shadow Hand asset -->
     <include file="left_hand.xml"/> 

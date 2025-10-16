@@ -1,5 +1,5 @@
 <mujoco model="right_shadow_hand">
-  <compiler meshdir="assets" autolimits="true" angle="radian"/> <!-- angle="radian" -->
+  <compiler meshdir="../assets" autolimits="true" angle="radian"/> <!-- angle="radian" -->
 
   <option cone="elliptic" impratio="10" /> 
 

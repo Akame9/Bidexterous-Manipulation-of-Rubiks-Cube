@@ -14,7 +14,9 @@ import os
 from collections import deque
 import random
 import time
-
+import argparse
+import sys
+from environment.rubiks_cube import RubiksCubeEnvironment
 # Optional Weights & Biases logging
 try:
     import wandb
@@ -22,6 +24,54 @@ try:
 except Exception:
     wandb = None
     _WANDB_AVAILABLE = False
+
+
+def get_device(device_arg='auto', gpu_id=0):
+    """
+    Automatically determine the best device for training.
+    
+    Args:
+        device_arg: Device specification ('auto', 'cpu', 'cuda', 'cuda:0', etc.)
+        gpu_id: GPU ID to use if multiple GPUs available
+        
+    Returns:
+        torch.device: The device to use for training
+    """
+    if device_arg == 'auto':
+        if torch.cuda.is_available():
+            # Check if specific GPU is available
+            if gpu_id < torch.cuda.device_count():
+                device = f'cuda:{gpu_id}'
+                print(f"Using GPU {gpu_id}: {torch.cuda.get_device_name(gpu_id)}")
+            else:
+                device = 'cuda:0'
+                print(f"GPU {gpu_id} not available, using GPU 0: {torch.cuda.get_device_name(0)}")
+        else:
+            device = 'cpu'
+            print("CUDA not available, using CPU")
+    else:
+        device = device_arg
+        if device.startswith('cuda'):
+            if not torch.cuda.is_available():
+                print("Warning: CUDA requested but not available, falling back to CPU")
+                device = 'cpu'
+            else:
+                print(f"Using specified device: {device}")
+        else:
+            print(f"Using specified device: {device}")
+    
+    return torch.device(device)
+
+
+def print_gpu_info(device):
+    """Print GPU information if using CUDA."""
+    if device.type == 'cuda':
+        print(f"GPU: {torch.cuda.get_device_name(device)}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(device).total_memory / 1e9:.1f} GB")
+        print(f"CUDA Version: {torch.version.cuda}")
+        print(f"PyTorch Version: {torch.__version__}")
+    else:
+        print("Running on CPU")
 
 
 class ActorCritic(nn.Module):
@@ -55,10 +105,11 @@ class ActorCritic(nn.Module):
         self._init_weights()
     
     def _init_weights(self):
-        """Initialize network weights using Xavier initialization."""
+        """Initialize network weights using Xavier initialization with smaller scale."""
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
+                # Use smaller initialization scale to prevent gradient explosion
+                nn.init.xavier_uniform_(m.weight, gain=0.5)
                 nn.init.constant_(m.bias, 0)
     
     def forward(self, state):
@@ -71,6 +122,19 @@ class ActorCritic(nn.Module):
         
         # Critic output
         value = self.critic(shared_features)
+        
+        # Check for NaN values and replace with zeros if found
+        if torch.isnan(action_mean).any():
+            print("Warning: NaN detected in action_mean, replacing with zeros")
+            action_mean = torch.zeros_like(action_mean)
+        
+        if torch.isnan(action_std).any():
+            print("Warning: NaN detected in action_std, replacing with small positive values")
+            action_std = torch.ones_like(action_std) * 1e-5
+        
+        if torch.isnan(value).any():
+            print("Warning: NaN detected in value, replacing with zeros")
+            value = torch.zeros_like(value)
         
         return action_mean, action_std, value
     
@@ -105,7 +169,8 @@ class PPOAgent:
     
     def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, 
                  eps_clip=0.2, k_epochs=10, entropy_coef=0.01, 
-                 value_coef=0.5, max_grad_norm=0.5, device='cpu'):
+                 value_coef=0.5, max_grad_norm=0.5, device='cpu', 
+                 use_mixed_precision=False, batch_size=64):
         """
         Initialize PPO agent.
         
@@ -120,6 +185,8 @@ class PPOAgent:
             value_coef: Value function loss coefficient
             max_grad_norm: Maximum gradient norm for clipping
             device: Device to run on ('cpu' or 'cuda')
+            use_mixed_precision: Whether to use mixed precision training (GPU only)
+            batch_size: Batch size for training
         """
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -131,10 +198,30 @@ class PPOAgent:
         self.value_coef = value_coef
         self.max_grad_norm = max_grad_norm
         self.device = device
+        self.use_mixed_precision = use_mixed_precision and device.type == 'cuda'
+        self.batch_size = batch_size
         
         # Initialize networks
         self.policy = ActorCritic(state_dim, action_dim).to(device)
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
+        safe_lr = min(lr, 1e-4)  # Cap learning rate at 1e-4
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=safe_lr)
+        if safe_lr != lr:
+            print(f"Warning: Learning rate reduced from {lr} to {safe_lr} to prevent instability")
+        
+        # Initialize mixed precision scaler if using GPU
+        if self.use_mixed_precision:
+            from torch.cuda.amp import GradScaler
+            self.scaler = GradScaler()
+            print("Using mixed precision training")
+        else:
+            self.scaler = None
+            
+        # Track best reward for saving best model
+        self.best_reward = float('-inf')
+        
+        # Track consecutive NaN occurrences
+        self.nan_count = 0
+        self.max_nan_count = 5  # Reset model after 5 consecutive NaN occurrences
         
         # Memory for storing experiences
         self.memory = PPOMemory()
@@ -162,15 +249,20 @@ class PPOAgent:
             log_prob: Log probability of action
             value: State value estimate
         """
+        # Validate input state
+        if np.isnan(state).any() or np.isinf(state).any():
+            print("Warning: NaN/Inf detected in input state, replacing with zeros")
+            state = np.nan_to_num(state, nan=0.0, posinf=0.0, neginf=0.0)
+        
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
             if deterministic:
                 action, value = self.policy.get_action(state, deterministic=True)
-                return action.cpu().numpy().flatten(), None, value.cpu().numpy().flatten()
+                return action.cpu().numpy().flatten(), None, value.cpu().numpy().item()
             else:
                 action, log_prob, value = self.policy.get_action(state, deterministic=False)
-                return action.cpu().numpy().flatten(), log_prob.cpu().numpy().flatten(), value.cpu().numpy().flatten()
+                return action.cpu().numpy().flatten(), log_prob.cpu().numpy().item(), value.cpu().numpy().item()
     
     def store_transition(self, state, action, reward, next_state, done, log_prob, value):
         """Store transition in memory."""
@@ -181,8 +273,8 @@ class PPOAgent:
         if len(self.memory.states) < 32:  # Reduced minimum batch size for memory efficiency
             return
         
-        # Process data in smaller batches to avoid memory issues
-        batch_size = min(256, len(self.memory.states))  # Limit batch size
+        # Use configured batch size or limit based on memory
+        batch_size = min(self.batch_size, len(self.memory.states))
         
         # Get all stored data
         states = torch.FloatTensor(self.memory.states).to(self.device)
@@ -191,10 +283,24 @@ class PPOAgent:
         next_states = torch.FloatTensor(self.memory.next_states).to(self.device)
         dones = torch.BoolTensor(self.memory.dones).to(self.device)
         old_log_probs = torch.FloatTensor(self.memory.log_probs).to(self.device)
-        old_values = torch.FloatTensor(self.memory.values).to(self.device)
+        old_values = torch.FloatTensor(self.memory.values).to(self.device).view(-1, 1)
         
+        # Can you print the shapes of the tensors?
+        print(f"states shape: {states.shape}")
+        print(f"actions shape: {actions.shape}")
+        print(f"rewards shape: {rewards.shape}")
+        print(f"next_states shape: {next_states.shape}")
+        print(f"dones shape: {dones.shape}")
+        print(f"old_log_probs shape: {old_log_probs.shape}")
+        print(f"old_values shape: {old_values.shape}")
         # Compute advantages and returns
         advantages, returns = self.compute_gae(rewards, old_values, dones)
+        
+        # Debug: Print shapes after GAE computation
+        print(f"After GAE computation:")
+        print(f"  advantages shape: {advantages.shape}")
+        print(f"  returns shape: {returns.shape}")
+        print(f"  old_values shape: {old_values.shape}")
         
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -219,32 +325,106 @@ class PPOAgent:
                 batch_advantages = advantages[batch_indices]
                 batch_returns = returns[batch_indices]
                 
-                # Get current policy outputs
-                log_probs, values, entropy = self.policy.evaluate(batch_states, batch_actions)
+                # Use mixed precision if enabled
+                if self.use_mixed_precision:
+                    from torch.cuda.amp import autocast
+                    with autocast():
+                        # Get current policy outputs
+                        log_probs, values, entropy = self.policy.evaluate(batch_states, batch_actions)
+                        
+                        # Compute ratios
+                        ratios = torch.exp(log_probs - batch_old_log_probs)
+                        
+                        # Compute surrogate losses
+                        surr1 = ratios * batch_advantages
+                        surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * batch_advantages
+                        policy_loss = -torch.min(surr1, surr2).mean()
+                        
+                        # Value loss
+                        value_loss = F.mse_loss(values, batch_returns)
+                        
+                        # Entropy loss
+                        entropy_loss = -entropy.mean()
+                        
+                        # Total loss
+                        total_loss = policy_loss + self.value_coef * value_loss + self.entropy_coef * entropy_loss
+                        
+                        # Check for NaN in losses
+                        if torch.isnan(total_loss):
+                            print("Warning: NaN detected in total_loss, skipping update")
+                            self.nan_count += 1
+                            if self.nan_count >= self.max_nan_count:
+                                print("Too many NaN occurrences, resetting model weights")
+                                self._reset_model_weights()
+                                self.nan_count = 0
+                            continue
+                        else:
+                            self.nan_count = 0  # Reset counter on successful update
+                    
+                    # Update with mixed precision
+                    self.optimizer.zero_grad()
+                    self.scaler.scale(total_loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    
+                    # Check for NaN gradients
+                    total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    if torch.isnan(total_grad_norm) or torch.isinf(total_grad_norm):
+                        print("Warning: NaN/Inf detected in gradients, skipping update")
+                        self.optimizer.zero_grad()
+                        continue
+                    
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    # Get current policy outputs
+                    log_probs, values, entropy = self.policy.evaluate(batch_states, batch_actions)
+                    
+                    # Compute ratios
+                    ratios = torch.exp(log_probs - batch_old_log_probs)
+                    
+                    # Compute surrogate losses
+                    surr1 = ratios * batch_advantages
+                    surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * batch_advantages
+                    policy_loss = -torch.min(surr1, surr2).mean()
+                    
+                    # Value loss
+                    value_loss = F.mse_loss(values, batch_returns)
+                    
+                    # Entropy loss
+                    entropy_loss = -entropy.mean()
+                    
+                    # Total loss
+                    total_loss = policy_loss + self.value_coef * value_loss + self.entropy_coef * entropy_loss
+                    
+                    # Check for NaN in losses
+                    if torch.isnan(total_loss):
+                        print("Warning: NaN detected in total_loss, skipping update")
+                        self.nan_count += 1
+                        if self.nan_count >= self.max_nan_count:
+                            print("Too many NaN occurrences, resetting model weights")
+                            self._reset_model_weights()
+                            self.nan_count = 0
+                        continue
+                    else:
+                        self.nan_count = 0  # Reset counter on successful update
+                    
+                    # Update
+                    self.optimizer.zero_grad()
+                    total_loss.backward()
+                    
+                    # Check for NaN gradients
+                    total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    if torch.isnan(total_grad_norm) or torch.isinf(total_grad_norm):
+                        print("Warning: NaN/Inf detected in gradients, skipping update")
+                        self.optimizer.zero_grad()
+                        continue
+                    
+                    self.optimizer.step()
                 
-                # Compute ratios
-                ratios = torch.exp(log_probs - batch_old_log_probs)
-                
-                # Compute surrogate losses
-                surr1 = ratios * batch_advantages
-                surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * batch_advantages
-                policy_loss = -torch.min(surr1, surr2).mean()
-                
-                # Value loss
-                value_loss = F.mse_loss(values, batch_returns)
-                
-                # Entropy loss
-                entropy_loss = -entropy.mean()
-                
-                # Total loss
-                total_loss = policy_loss + self.value_coef * value_loss + self.entropy_coef * entropy_loss
-                
-                # Update
-                self.optimizer.zero_grad()
-                total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                self.optimizer.step()
-                
+                # Can you print the policy loss, value loss, and entropy loss?
+                print(f"Policy loss: {policy_loss.item()}")
+                print(f"Value loss: {value_loss.item()}")
+                print(f"Entropy loss: {entropy_loss.item()}")
                 # Store losses for statistics
                 policy_losses.append(policy_loss.item())
                 value_losses.append(value_loss.item())
@@ -264,6 +444,10 @@ class PPOAgent:
         
         # Clear memory
         self.memory.clear()
+        
+        # Clear GPU cache if using CUDA
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
     
     def compute_gae(self, rewards, values, dones, lam=0.95):
         """
@@ -279,23 +463,36 @@ class PPOAgent:
             advantages: Computed advantages
             returns: Computed returns
         """
-        advantages = []
-        returns = []
+        # Ensure tensors are the right shape
+        rewards = rewards.view(-1)
+        values = values.view(-1)  # Convert from [batch_size, 1] to [batch_size]
+        dones = dones.view(-1)
+        
+        # Debug: Print shapes if they seem wrong
+        if len(rewards) != len(values) or len(rewards) != len(dones):
+            print(f"Warning: Shape mismatch in GAE computation:")
+            print(f"  rewards shape: {rewards.shape}")
+            print(f"  values shape: {values.shape}")
+            print(f"  dones shape: {dones.shape}")
         
         # Compute next values (append 0 for terminal states)
-        next_values = torch.cat([values[1:], torch.zeros(1, 1).to(self.device)])
+        next_values = torch.cat([values[1:], torch.zeros(1).to(self.device)])
         
         # Compute TD errors
         td_errors = rewards + self.gamma * next_values * (~dones).float() - values
         
         # Compute GAE advantages
+        advantages = []
         advantage = 0
         for i in reversed(range(len(td_errors))):
             advantage = td_errors[i] + self.gamma * lam * (~dones[i]).float() * advantage
             advantages.insert(0, advantage)
         
-        advantages = torch.cat(advantages)
+        advantages = torch.stack(advantages)
         returns = advantages + values
+        
+        # Ensure returns has the same shape as policy network output [batch_size, 1]
+        returns = returns.view(-1, 1)
         
         return advantages, returns
     
@@ -307,6 +504,20 @@ class PPOAgent:
             'training_stats': self.training_stats
         }, filepath)
         print(f"Model saved to {filepath}")
+    
+    def save_best_model(self, reward, filepath):
+        """Save model only if it achieves a new best reward."""
+        if reward > self.best_reward:
+            self.best_reward = reward
+            torch.save({
+                'policy_state_dict': self.policy.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'training_stats': self.training_stats,
+                'best_reward': self.best_reward
+            }, filepath)
+            print(f"New best model saved! Reward: {reward:.2f} (Previous best: {self.best_reward:.2f})")
+            return True
+        return False
     
     def load_model(self, filepath):
         """Load a trained model."""
@@ -322,6 +533,17 @@ class PPOAgent:
     def get_training_stats(self):
         """Get training statistics."""
         return self.training_stats
+    
+    def _reset_model_weights(self):
+        """Reset model weights to prevent persistent NaN issues."""
+        print("Resetting model weights...")
+        # Reinitialize the policy network
+        self.policy.apply(self.policy._init_weights)
+        # Reset optimizer state
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=min(self.lr, 1e-4))
+        # Clear memory to start fresh
+        self.memory.clear()
+        print("Model weights reset successfully")
 
 
 class PPOMemory:
@@ -369,7 +591,7 @@ class PPOMemory:
 
 
 def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500, 
-                   save_interval=100, model_path="ppo_model.pth"):
+                   save_interval=100, model_path="ppo_model.pth", save_best_only=False):
     """
     Train PPO agent on the environment.
     
@@ -380,6 +602,7 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
         max_steps: Maximum steps per episode
         save_interval: Interval for saving model
         model_path: Path to save model
+        save_best_only: If True, only save the best model (overwrites previous best)
     """
     print("Starting PPO training...")
     if _WANDB_AVAILABLE and wandb.run is not None:
@@ -451,22 +674,40 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
             avg_length = np.mean(agent.training_stats['episode_lengths'][-10:])
             print(f"Episode {episode}, Avg Reward: {avg_reward:.2f}, Avg Length: {avg_length:.2f}")
         
-        # Save model
-        if episode % save_interval == 0 and episode > 0:
-            agent.save_model(f"{model_path}_{episode}")
-            if _WANDB_AVAILABLE and wandb.run is not None:
-                wandb.save(f"{model_path}_{episode}")
+        if save_best_only:
+                # Create proper filename: replace .pth with _best.pth
+                model_name = model_path.rsplit('.', 1)[0] if '.' in model_path else model_path
+                best_model_path = f"{model_name}_best.pth"
+                best_model_saved = agent.save_best_model(avg_reward, best_model_path)
+                if best_model_saved and _WANDB_AVAILABLE and wandb.run is not None:
+                    wandb.save(best_model_path)
+        else:
+                agent.save_model(f"{model_path}_{episode}")
+                if _WANDB_AVAILABLE and wandb.run is not None:
+                    wandb.save(f"{model_path}_{episode}")
     
-    # Save final model
-    agent.save_model(model_path)
-    if _WANDB_AVAILABLE and wandb.run is not None:
-        wandb.save(model_path)
-    print("Training completed!")
+    # Save final model based on save_best_only setting
+    if save_best_only:
+        # Create proper filename: replace .pth with _final_best.pth
+        model_name = model_path.rsplit('.', 1)[0] if '.' in model_path else model_path
+        final_best_path = f"{model_name}_final_best.pth"
+        final_best_saved = agent.save_best_model(avg_reward, final_best_path)
+        if final_best_saved and _WANDB_AVAILABLE and wandb.run is not None:
+            wandb.save(final_best_path)
+        
+        print(f"Training completed! Best reward achieved: {agent.best_reward:.2f}")
+        if final_best_saved:
+            print(f"Final best model saved to {final_best_path}")
+        else:
+            print(f"Best model was saved earlier with reward: {agent.best_reward:.2f}")
+    else:
+        agent.save_model(model_path)
+        if _WANDB_AVAILABLE and wandb.run is not None:
+            wandb.save(model_path)
+        print("Training completed!")
 
 
 if __name__ == "__main__":
-    import argparse
-    from environment.rubiks_cube import RubiksCubeEnvironment
 
     parser = argparse.ArgumentParser(description="Train PPO on Rubik's Cube environment")
     parser.add_argument('--xml', type=str, default='xmls/bidexhands.xml', help='MuJoCo XML path')
@@ -479,9 +720,13 @@ if __name__ == "__main__":
     parser.add_argument('--entropy_coef', type=float, default=0.01, help='Entropy coefficient')
     parser.add_argument('--value_coef', type=float, default=0.5, help='Value loss coefficient')
     parser.add_argument('--max_grad_norm', type=float, default=0.5, help='Max grad norm')
-    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device')
+    parser.add_argument('--device', type=str, default='auto', help='Device (auto, cpu, cuda, cuda:0, etc.)')
+    parser.add_argument('--gpu_id', type=int, default=0, help='GPU ID to use (if multiple GPUs available)')
+    parser.add_argument('--use_mixed_precision', action='store_true', help='Use mixed precision training (GPU only)')
+    parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training')
     parser.add_argument('--save_interval', type=int, default=100, help='Episodes between checkpoints')
     parser.add_argument('--model_path', type=str, default='saved_models/ppo_model.pth', help='Model save path')
+    parser.add_argument('--save_best_only', action='store_true', help='Save only the best model (overwrites previous best)')
     parser.add_argument('--enable_viewer', action='store_true', help='Enable MuJoCo viewer')
     parser.add_argument('--visualize_collision_boxes', action='store_true', help='Visualize collision boxes')
     parser.add_argument('--project', type=str, default='mujoco-rubiks-ppo', help='wandb project name')
@@ -489,12 +734,20 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     args = parser.parse_args()
 
+    # Determine device
+    device = get_device(args.device, args.gpu_id)
+    
+    # Print GPU information
+    print_gpu_info(device)
+    
     # Seeding
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
+    if device.type == 'cuda':
         torch.cuda.manual_seed_all(args.seed)
+        # Set CUDA device
+        torch.cuda.set_device(device)
 
     # Initialize wandb
     if _WANDB_AVAILABLE:
@@ -511,7 +764,7 @@ if __name__ == "__main__":
             'entropy_coef': args.entropy_coef,
             'value_coef': args.value_coef,
             'max_grad_norm': args.max_grad_norm,
-            'device': args.device,
+            'device': str(device),
             'seed': args.seed,
         })
 
@@ -535,7 +788,9 @@ if __name__ == "__main__":
         entropy_coef=args.entropy_coef,
         value_coef=args.value_coef,
         max_grad_norm=args.max_grad_norm,
-        device=args.device,
+        device=device,
+        use_mixed_precision=args.use_mixed_precision,
+        batch_size=args.batch_size,
     )
 
     # Train
@@ -547,6 +802,7 @@ if __name__ == "__main__":
             max_steps=args.max_steps,
             save_interval=args.save_interval,
             model_path=args.model_path,
+            save_best_only=args.save_best_only,
         )
     finally:
         env.close()

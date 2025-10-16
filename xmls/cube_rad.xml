@@ -1,5 +1,5 @@
 <mujoco model="Cube 3x3x3">
-  <compiler autolimits="true" texturedir="assets" angle="radian"/>
+  <compiler autolimits="true" angle="radian" texturedir="../assets"/>
 
   <option timestep="0.01" integrator="implicitfast"/>
 
