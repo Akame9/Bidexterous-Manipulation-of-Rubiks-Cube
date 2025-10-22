@@ -1,0 +1,17 @@
+Evaluation Results
+==================
+
+Model: saved_models/ppo_model_best.pth
+Episodes: 5
+Deterministic: True
+
+Results:
+Average Reward: -50.00 ± 0.00
+Average Length: 200.00 ± 0.00
+
+Episode Details:
+Episode 1: Reward=-50.00, Length=200
+Episode 2: Reward=-50.00, Length=200
+Episode 3: Reward=-50.00, Length=200
+Episode 4: Reward=-50.00, Length=200
+Episode 5: Reward=-50.00, Length=200

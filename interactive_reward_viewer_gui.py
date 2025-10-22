@@ -82,6 +82,19 @@ class InteractiveRewardViewerGUI:
                 self.hand_actuators.append(i)
             elif name in ['red', 'orange', 'blue', 'green', 'white', 'yellow']:
                 self.cube_actuators.append(i)
+        
+        # Get all cube body IDs (core + all children)
+        self.cube_body_ids = set()
+        core_body_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, "core")
+        if core_body_id != -1:
+            self.cube_body_ids.add(core_body_id)
+            # Get all bodies and check if they're cube bodies (not hand bodies)
+            for i in range(self.model.nbody):
+                body_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, i)
+                if body_name and not body_name.startswith('lh_') and not body_name.startswith('rh_') and body_name != 'world':
+                    self.cube_body_ids.add(i)
+        
+        print(f"Found {len(self.cube_body_ids)} cube bodies")
     
     def _set_neutral_pose(self):
         """Set both hands to a neutral grasping pose."""
@@ -131,11 +144,10 @@ class InteractiveRewardViewerGUI:
     def _get_contact_forces(self) -> np.ndarray:
         """Get contact forces between hands and cube."""
         contact_force = np.zeros(3)
-        cube_body_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, "core")
-        
         ncon = self.data.ncon
+        print(f"Number of contacts: {ncon}")
         
-        if ncon > 0 and cube_body_id != -1:
+        if ncon > 0:
             efc_force = np.zeros(6)
             for i in range(ncon):
                 contact = self.data.contact[i]
@@ -144,22 +156,26 @@ class InteractiveRewardViewerGUI:
                 
                 body1_id = self.model.geom_bodyid[geom1_id]
                 body2_id = self.model.geom_bodyid[geom2_id]
+                body1_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, body1_id)
+                body2_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, body2_id)
+                
                 
                 is_hand_cube_contact = False
                 
-                if body1_id == cube_body_id or body2_id == cube_body_id:
-                    if body1_id == cube_body_id:
-                        other_body_id = body2_id
-                    else:
-                        other_body_id = body1_id
-                    
-                    other_body_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, other_body_id)
-                    if other_body_name and ('lh_' in other_body_name or 'rh_' in other_body_name):
-                        is_hand_cube_contact = True
+                # Check if one body is a cube body and the other is a hand body
+                body1_is_cube = body1_id in self.cube_body_ids
+                body2_is_cube = body2_id in self.cube_body_ids
+                body1_is_hand = body1_name and ('lh_' in body1_name or 'rh_' in body1_name)
+                body2_is_hand = body2_name and ('lh_' in body2_name or 'rh_' in body2_name)
+                
+                if (body1_is_cube and body2_is_hand) or (body2_is_cube and body1_is_hand):
+                    is_hand_cube_contact = True
                 
                 if is_hand_cube_contact:
                     mj.mj_contactForce(self.model, self.data, i, efc_force)
-                    contact_force += efc_force[3:]
+                    print(f"Contact Force: {efc_force}")
+                    print(f"Contact Force Magnitude: {np.linalg.norm(efc_force[0:3])}")
+                    contact_force += efc_force[0:3]
         
         return contact_force
     
@@ -176,7 +192,7 @@ class InteractiveRewardViewerGUI:
         if force_magnitude > 0.05:
             if force_magnitude < 2.0:
                 reward = 2.0
-                info['message'] = "Gentle grasp ✓"
+                info['message'] = "Gentle grasp [OK]"
             elif force_magnitude < 5.0:
                 reward = 1.0
                 info['message'] = "Moderate grasp"
@@ -225,16 +241,13 @@ class InteractiveRewardViewerGUI:
     def calculate_reward(self) -> Tuple[float, Dict]:
         """Calculate total reward."""
         grasp_reward, grasp_info = self._calculate_grasp_reward()
-        manipulation_reward, manip_info = self._calculate_manipulation_reward()
         
-        total_reward = grasp_reward * 0.5 + manipulation_reward * 0.5
+        total_reward = grasp_reward
         
         info = {
             'total_reward': total_reward,
             'grasp_reward': grasp_reward,
-            'manipulation_reward': manipulation_reward,
-            'grasp_info': grasp_info,
-            'manipulation_info': manip_info
+            'grasp_info': grasp_info
         }
         
         return total_reward, info
@@ -312,8 +325,8 @@ class InteractiveRewardViewerGUI:
         
         if self.show_help:
             print("\nCONTROLS:")
-            print("  ↑/↓      : Increase/decrease actuator value")
-            print("  ←/→      : Large increase/decrease")
+            print("  UP/DOWN  : Increase/decrease actuator value")
+            print("  LEFT/RIGHT : Large increase/decrease")
             print("  TAB      : Select next actuator")
             print("  R        : Reset current actuator")
             print("  SPACE    : Reset all to neutral")
@@ -337,7 +350,7 @@ class InteractiveRewardViewerGUI:
                 normalized = (ctrl_value - ctrl_range[0]) / (ctrl_range[1] - ctrl_range[0])
                 bar_width = 40
                 filled = int(normalized * bar_width)
-                bar = "█" * filled + "░" * (bar_width - filled)
+                bar = "#" * filled + "-" * (bar_width - filled)
                 print(f"  [{bar}] {normalized*100:.1f}%")
             print()
         
@@ -352,24 +365,17 @@ class InteractiveRewardViewerGUI:
         # Rewards
         total_reward, reward_info = self.calculate_reward()
         
-        print("REWARD BREAKDOWN:")
-        print(f"  Grasp Reward:        {reward_info['grasp_reward']:+7.3f}  ({reward_info['grasp_info']['message']})")
-        print(f"  Manipulation Reward: {reward_info['manipulation_reward']:+7.3f}")
-        for msg in reward_info['manipulation_info']['reward_breakdown']:
-            print(f"    • {msg}")
-        print(f"  {'─' * 40}")
-        print(f"  TOTAL REWARD:        {total_reward:+7.3f}")
+        print("REWARD:")
+        print(f"  Grasp Reward: {reward_info['grasp_reward']:+7.3f}  ({reward_info['grasp_info']['message']})")
         print()
         
         # Cube state
         cube_pos = self._get_cube_position()
         cube_ang_vel = self._get_cube_angular_velocity()
-        rotation = reward_info['manipulation_info']['rotation_angle']
         
         print("CUBE STATE:")
-        print(f"  Position:       [{cube_pos[0]:+.3f}, {cube_pos[1]:+.3f}, {cube_pos[2]:+.3f}]")
-        print(f"  Angular vel:    {np.linalg.norm(cube_ang_vel):.3f} rad/s")
-        print(f"  Rotation angle: {rotation:.3f} rad ({np.rad2deg(rotation):.1f}°)")
+        print(f"  Position:    [{cube_pos[0]:+.3f}, {cube_pos[1]:+.3f}, {cube_pos[2]:+.3f}]")
+        print(f"  Angular vel: {np.linalg.norm(cube_ang_vel):.3f} rad/s")
         
         print("=" * 70)
     

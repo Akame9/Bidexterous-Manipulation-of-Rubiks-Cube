@@ -112,10 +112,22 @@ class RubiksCubeEnvironment:
                 self.cube_actuators.append(i)
                 # Note: cube actuators are NOT added to hand_actuators
         
+        # Get all cube body IDs (core + all children)
+        self.cube_body_ids = set()
+        core_body_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, "core")
+        if core_body_id != -1:
+            self.cube_body_ids.add(core_body_id)
+            # Get all bodies and check if they're cube bodies (not hand bodies)
+            for i in range(self.model.nbody):
+                body_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, i)
+                if body_name and not body_name.startswith('lh_') and not body_name.startswith('rh_') and body_name != 'world':
+                    self.cube_body_ids.add(i)
+        
         print(f"Left hand actuators: {len(self.left_hand_actuators)}")
         print(f"Right hand actuators: {len(self.right_hand_actuators)}")
         print(f"Cube actuators: {len(self.cube_actuators)} (excluded from action space)")
         print(f"Total hand actuators for action space: {len(self.hand_actuators)}")
+        print(f"Found {len(self.cube_body_ids)} cube bodies")
     
     def _setup_spaces(self):
         """Setup state and action space dimensions."""
@@ -285,15 +297,12 @@ class RubiksCubeEnvironment:
         """Get contact forces between hands and cube only."""
         contact_force = np.zeros(3)  # [fx, fy, fz]
         
-        # Get cube body ID
-        cube_body_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, "core")
-        
         # Aggregate contact forces using MuJoCo API, filtering for hand-cube contacts only
         ncon = self.data.ncon
         hand_cube_contacts = 0
         total_raw_force = 0.0
         
-        if ncon > 0 and cube_body_id != -1:
+        if ncon > 0:
             efc_force = np.zeros(6)
             for i in range(ncon):
                 # Get contact information
@@ -305,33 +314,30 @@ class RubiksCubeEnvironment:
                 body1_id = self.model.geom_bodyid[geom1_id]
                 body2_id = self.model.geom_bodyid[geom2_id]
                 
-                # Check if this is a hand-cube contact
-                # One geometry should be from the cube, the other from a hand
+                body1_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, body1_id)
+                body2_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, body2_id)
+                
                 is_hand_cube_contact = False
                 
-                if body1_id == cube_body_id or body2_id == cube_body_id:
-                    # Check if the other body is a hand
-                    if body1_id == cube_body_id:
-                        other_body_id = body2_id
-                    else:
-                        other_body_id = body1_id
-                    
-                    # Get body name to check if it's a hand
-                    other_body_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, other_body_id)
-                    if other_body_name and ('lh_' in other_body_name or 'rh_' in other_body_name):
-                        is_hand_cube_contact = True
+                # Check if one body is a cube body and the other is a hand body
+                body1_is_cube = body1_id in self.cube_body_ids
+                body2_is_cube = body2_id in self.cube_body_ids
+                body1_is_hand = body1_name and ('lh_' in body1_name or 'rh_' in body1_name)
+                body2_is_hand = body2_name and ('lh_' in body2_name or 'rh_' in body2_name)
+                
+                if (body1_is_cube and body2_is_hand) or (body2_is_cube and body1_is_hand):
+                    is_hand_cube_contact = True
                 
                 # Only accumulate forces from hand-cube contacts
                 if is_hand_cube_contact:
                     mj.mj_contactForce(self.model, self.data, i, efc_force)
-                    contact_force += efc_force[3:] * 1.0  # accumulate linear force (fx, fy, fz)
-                    total_raw_force += np.sum(np.abs(efc_force[3:]))
+                    contact_force += efc_force[0:3] * 1.0  # accumulate normal force (fx, fy, fz)
                     hand_cube_contacts += 1
             
             # Debug: Print contact information
             if self.current_step % 100 == 0:  # Print every 100 steps to avoid spam
                 print(f"CONTACT DEBUG: {ncon} total contacts, {hand_cube_contacts} hand-cube contacts")
-                print(f"CONTACT DEBUG: Hand-cube raw force: {total_raw_force:.6f}, accumulated force: {np.linalg.norm(contact_force):.6f}")
+                print(f"CONTACT DEBUG: accumulated force: {np.linalg.norm(contact_force):.6f}")
         
         return contact_force
     
@@ -449,11 +455,11 @@ class RubiksCubeEnvironment:
         
         # 1. Grasping reward (based on contact forces) - PRIORITY
         grasp_reward = self._calculate_grasp_reward()
-        reward += grasp_reward * 0.5 #0.4
+        reward += grasp_reward #* 0.5 #0.4
         
         # 2. Manipulation reward (based on cube rotation) - PRIORITY
-        manipulation_reward = self._calculate_manipulation_reward()
-        reward += manipulation_reward * 0.5 #0.3
+        # manipulation_reward = self._calculate_manipulation_reward()
+        # reward += manipulation_reward * 0.5 #0.3
         
         # 3. Cube manipulation reward (based on cube movement and stability)
         # cube_reward = self._calculate_cube_reward()
@@ -492,12 +498,15 @@ class RubiksCubeEnvironment:
         # Enhanced grasping reward for learning to grab the cube
         if force_magnitude > 0.05:  # Any contact is good
             # Reward increases with contact up to optimal range
-            if force_magnitude < 2.0:
+            if force_magnitude < 1.0:
+                print(f"GRASP REWARD: Very light grasp (force={force_magnitude:.3f}) -> +0.5")
+                return 0.0 
+            elif force_magnitude < 3.0:
                 print(f"GRASP REWARD: Gentle grasp (force={force_magnitude:.3f}) -> +2.0")
                 return 2.0  # Strong reward for gentle but firm grasp
             elif force_magnitude < 5.0:
                 print(f"GRASP REWARD: Moderate grasp (force={force_magnitude:.3f}) -> +1.0")
-                return 1.0  # Good reward for moderate grasp
+                return 1.0  
             else:
                 print(f"GRASP REWARD: Excessive force (force={force_magnitude:.3f}) -> +0.5")
                 return 0.5  # Reduced reward for excessive force
