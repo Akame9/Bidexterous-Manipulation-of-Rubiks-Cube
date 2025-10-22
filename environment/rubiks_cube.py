@@ -334,10 +334,6 @@ class RubiksCubeEnvironment:
                     contact_force += efc_force[0:3] * 1.0  # accumulate normal force (fx, fy, fz)
                     hand_cube_contacts += 1
             
-            # Debug: Print contact information
-            if self.current_step % 100 == 0:  # Print every 100 steps to avoid spam
-                print(f"CONTACT DEBUG: {ncon} total contacts, {hand_cube_contacts} hand-cube contacts")
-                print(f"CONTACT DEBUG: accumulated force: {np.linalg.norm(contact_force):.6f}")
         
         return contact_force
     
@@ -499,19 +495,19 @@ class RubiksCubeEnvironment:
         if force_magnitude > 0.05:  # Any contact is good
             # Reward increases with contact up to optimal range
             if force_magnitude < 1.0:
-                print(f"GRASP REWARD: Very light grasp (force={force_magnitude:.3f}) -> +0.5")
+                # print(f"GRASP REWARD: Very light grasp (force={force_magnitude:.3f}) -> +0.5")
                 return 0.0 
             elif force_magnitude < 3.0:
-                print(f"GRASP REWARD: Gentle grasp (force={force_magnitude:.3f}) -> +2.0")
+                # print(f"GRASP REWARD: Gentle grasp (force={force_magnitude:.3f}) -> +2.0")
                 return 2.0  # Strong reward for gentle but firm grasp
             elif force_magnitude < 5.0:
-                print(f"GRASP REWARD: Moderate grasp (force={force_magnitude:.3f}) -> +1.0")
+                # print(f"GRASP REWARD: Moderate grasp (force={force_magnitude:.3f}) -> +1.0")
                 return 1.0  
             else:
-                print(f"GRASP REWARD: Excessive force (force={force_magnitude:.3f}) -> +0.5")
+                # print(f"GRASP REWARD: Excessive force (force={force_magnitude:.3f}) -> +0.5")
                 return 0.5  # Reduced reward for excessive force
         else:
-            print(f"GRASP REWARD: No contact (force={force_magnitude:.3f}) -> -0.5")
+            # print(f"GRASP REWARD: No contact (force={force_magnitude:.3f}) -> -0.5")
             return -0.5  # Penalty for no contact (encourage grasping)
     
     def _calculate_manipulation_reward(self) -> float:

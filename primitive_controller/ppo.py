@@ -16,6 +16,7 @@ import random
 import time
 import argparse
 import sys
+from tqdm import tqdm
 from environment.rubiks_cube import RubiksCubeEnvironment
 # Optional Weights & Biases logging
 try:
@@ -286,21 +287,21 @@ class PPOAgent:
         old_values = torch.FloatTensor(self.memory.values).to(self.device).view(-1, 1)
         
         # Can you print the shapes of the tensors?
-        print(f"states shape: {states.shape}")
-        print(f"actions shape: {actions.shape}")
-        print(f"rewards shape: {rewards.shape}")
-        print(f"next_states shape: {next_states.shape}")
-        print(f"dones shape: {dones.shape}")
-        print(f"old_log_probs shape: {old_log_probs.shape}")
-        print(f"old_values shape: {old_values.shape}")
+        # print(f"states shape: {states.shape}")
+        # print(f"actions shape: {actions.shape}")
+        # print(f"rewards shape: {rewards.shape}")
+        # print(f"next_states shape: {next_states.shape}")
+        # print(f"dones shape: {dones.shape}")
+        # print(f"old_log_probs shape: {old_log_probs.shape}")
+        # print(f"old_values shape: {old_values.shape}")
         # Compute advantages and returns
         advantages, returns = self.compute_gae(rewards, old_values, dones)
         
         # Debug: Print shapes after GAE computation
-        print(f"After GAE computation:")
-        print(f"  advantages shape: {advantages.shape}")
-        print(f"  returns shape: {returns.shape}")
-        print(f"  old_values shape: {old_values.shape}")
+        # print(f"After GAE computation:")
+        # print(f"  advantages shape: {advantages.shape}")
+        # print(f"  returns shape: {returns.shape}")
+        # print(f"  old_values shape: {old_values.shape}")
         
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -421,10 +422,6 @@ class PPOAgent:
                     
                     self.optimizer.step()
                 
-                # Can you print the policy loss, value loss, and entropy loss?
-                print(f"Policy loss: {policy_loss.item()}")
-                print(f"Value loss: {value_loss.item()}")
-                print(f"Entropy loss: {entropy_loss.item()}")
                 # Store losses for statistics
                 policy_losses.append(policy_loss.item())
                 value_losses.append(value_loss.item())
@@ -622,7 +619,7 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
             'max_grad_norm': agent.max_grad_norm,
         }, allow_val_change=True)
     
-    for episode in range(num_episodes):
+    for episode in tqdm(range(num_episodes), desc="Training Episodes"):
         state = env.initialize()
         episode_reward = 0
         episode_length = 0
@@ -686,25 +683,8 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
                 if _WANDB_AVAILABLE and wandb.run is not None:
                     wandb.save(f"{model_path}_{episode}")
     
-    # Save final model based on save_best_only setting
-    if save_best_only:
-        # Create proper filename: replace .pth with _final_best.pth
-        model_name = model_path.rsplit('.', 1)[0] if '.' in model_path else model_path
-        final_best_path = f"{model_name}_final_best.pth"
-        final_best_saved = agent.save_best_model(avg_reward, final_best_path)
-        if final_best_saved and _WANDB_AVAILABLE and wandb.run is not None:
-            wandb.save(final_best_path)
-        
-        print(f"Training completed! Best reward achieved: {agent.best_reward:.2f}")
-        if final_best_saved:
-            print(f"Final best model saved to {final_best_path}")
-        else:
-            print(f"Best model was saved earlier with reward: {agent.best_reward:.2f}")
-    else:
-        agent.save_model(model_path)
-        if _WANDB_AVAILABLE and wandb.run is not None:
-            wandb.save(model_path)
-        print("Training completed!")
+    
+    print("Training completed!")
 
 
 if __name__ == "__main__":
