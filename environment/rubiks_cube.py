@@ -331,7 +331,7 @@ class RubiksCubeEnvironment:
                 # Only accumulate forces from hand-cube contacts
                 if is_hand_cube_contact:
                     mj.mj_contactForce(self.model, self.data, i, efc_force)
-                    contact_force += efc_force[0:3] * 1.0  # accumulate normal force (fx, fy, fz)
+                    contact_force += efc_force[0:3] #* 1.0  # accumulate normal force (fx, fy, fz)
                     hand_cube_contacts += 1
             
         

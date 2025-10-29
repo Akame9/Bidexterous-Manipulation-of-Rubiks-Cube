@@ -37,10 +37,19 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, det
     episode_lengths = []
     episode_infos = []
     
+    # Track specific reward values
+    reward_2_count = 0
+    reward_1_count = 0
+    total_steps = 0
+    
     for episode in range(num_episodes):
         state = env.initialize()
         episode_reward = 0
         episode_length = 0
+        
+        # Track rewards for this episode
+        episode_reward_2_count = 0
+        episode_reward_1_count = 0
         
         print(f"\n{'='*60}")
         print(f"Episode {episode + 1}/{num_episodes}")
@@ -52,6 +61,16 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, det
             
             # Take step
             next_state, reward, done, info = env.take_step(action)
+            
+            # Track specific reward values
+            if abs(reward - 2.0) < 1e-6:  # Check for exactly 2.0
+                reward_2_count += 1
+                episode_reward_2_count += 1
+            elif abs(reward - 1.0) < 1e-6:  # Check for exactly 1.0
+                reward_1_count += 1
+                episode_reward_1_count += 1
+            
+            total_steps += 1
             
             state = next_state
             episode_reward += reward
@@ -80,6 +99,8 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, det
         print(f"    Episode Length: {episode_length}")
         print(f"    Final Cube Position: {info['cube_position']}")
         print(f"    Contacts: {info['contact_count']}")
+        print(f"    Reward 2.0 count: {episode_reward_2_count} (this episode)")
+        print(f"    Reward 1.0 count: {episode_reward_1_count} (this episode)")
     
     # Overall statistics
     avg_reward = np.mean(episode_rewards)
@@ -95,6 +116,12 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, det
     print(f"Average Length: {avg_length:.2f} ± {std_length:.2f}")
     print(f"Min Reward: {min(episode_rewards):.2f}")
     print(f"Max Reward: {max(episode_rewards):.2f}")
+    print(f"")
+    print(f"REWARD BREAKDOWN:")
+    print(f"  Total Steps: {total_steps}")
+    print(f"  Reward 2.0 count: {reward_2_count} ({reward_2_count/total_steps*100:.1f}% of steps)")
+    print(f"  Reward 1.0 count: {reward_1_count} ({reward_1_count/total_steps*100:.1f}% of steps)")
+    print(f"  Other rewards: {total_steps - reward_2_count - reward_1_count} ({(total_steps - reward_2_count - reward_1_count)/total_steps*100:.1f}% of steps)")
     print(f"{'='*60}\n")
     
     return {
@@ -104,7 +131,10 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, det
         'std_length': std_length,
         'episode_rewards': episode_rewards,
         'episode_lengths': episode_lengths,
-        'episode_infos': episode_infos
+        'episode_infos': episode_infos,
+        'reward_2_count': reward_2_count,
+        'reward_1_count': reward_1_count,
+        'total_steps': total_steps
     }
 
 

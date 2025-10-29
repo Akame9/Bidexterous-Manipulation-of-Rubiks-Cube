@@ -171,7 +171,8 @@ class PPOAgent:
     def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, 
                  eps_clip=0.2, k_epochs=10, entropy_coef=0.01, 
                  value_coef=0.5, max_grad_norm=0.5, device='cpu', 
-                 use_mixed_precision=False, batch_size=64):
+                 use_mixed_precision=False, batch_size=64, 
+                 high_reward_threshold=1.5):
         """
         Initialize PPO agent.
         
@@ -201,6 +202,7 @@ class PPOAgent:
         self.device = device
         self.use_mixed_precision = use_mixed_precision and device.type == 'cuda'
         self.batch_size = batch_size
+        self.high_reward_threshold = high_reward_threshold
         
         # Initialize networks
         self.policy = ActorCritic(state_dim, action_dim).to(device)
@@ -225,7 +227,7 @@ class PPOAgent:
         self.max_nan_count = 5  # Reset model after 5 consecutive NaN occurrences
         
         # Memory for storing experiences
-        self.memory = PPOMemory()
+        self.memory = PPOMemory(high_reward_threshold=self.high_reward_threshold)
         
         # Training statistics
         self.training_stats = {
@@ -270,7 +272,7 @@ class PPOAgent:
         self.memory.store(state, action, reward, next_state, done, log_prob, value)
     
     def update(self):
-        """Update policy using PPO algorithm."""
+        """Update policy using PPO algorithm with high-reward experience prioritization."""
         if len(self.memory.states) < 32:  # Reduced minimum batch size for memory efficiency
             return
         
@@ -285,6 +287,9 @@ class PPOAgent:
         dones = torch.BoolTensor(self.memory.dones).to(self.device)
         old_log_probs = torch.FloatTensor(self.memory.log_probs).to(self.device)
         old_values = torch.FloatTensor(self.memory.values).to(self.device).view(-1, 1)
+        
+        # Get high-reward experiences for additional training
+        high_reward_data = self.memory.get_high_reward_experiences(num_samples=min(16, len(self.memory.high_reward_indices)))
         
         # Can you print the shapes of the tensors?
         # print(f"states shape: {states.shape}")
@@ -305,6 +310,33 @@ class PPOAgent:
         
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        
+        # Process high-reward experiences if available
+        high_reward_states = None
+        high_reward_actions = None
+        high_reward_old_log_probs = None
+        high_reward_advantages = None
+        high_reward_returns = None
+        
+        if high_reward_data is not None and len(high_reward_data['states']) > 0:
+            # Convert high-reward data to tensors
+            high_reward_states = torch.FloatTensor(high_reward_data['states']).to(self.device)
+            high_reward_actions = torch.FloatTensor(high_reward_data['actions']).to(self.device)
+            high_reward_rewards = torch.FloatTensor(high_reward_data['rewards']).to(self.device)
+            high_reward_dones = torch.BoolTensor(high_reward_data['dones']).to(self.device)
+            high_reward_old_log_probs = torch.FloatTensor(high_reward_data['log_probs']).to(self.device)
+            high_reward_old_values = torch.FloatTensor(high_reward_data['values']).to(self.device).view(-1, 1)
+            
+            # Compute advantages and returns for high-reward experiences
+            high_reward_advantages, high_reward_returns = self.compute_gae(
+                high_reward_rewards, high_reward_old_values, high_reward_dones
+            )
+            
+            # Normalize high-reward advantages using the same normalization as regular data
+            if len(high_reward_advantages) > 1:
+                high_reward_advantages = (high_reward_advantages - high_reward_advantages.mean()) / (high_reward_advantages.std() + 1e-8)
+            else:
+                high_reward_advantages = high_reward_advantages - high_reward_advantages.mean()
         
         # PPO update with mini-batches
         total_samples = len(states)
@@ -431,6 +463,102 @@ class PPOAgent:
                 if self.device == 'cuda':
                     torch.cuda.empty_cache()
         
+        # Additional training on high-reward experiences if available
+        if high_reward_states is not None and len(high_reward_states) > 0:
+            print(f"Training on {len(high_reward_states)} high-reward experiences")
+            
+            # Train on high-reward experiences for additional epochs
+            for _ in range(min(2, self.k_epochs)):  # Use fewer epochs for high-reward data
+                # Get current policy outputs for high-reward experiences
+                if self.use_mixed_precision:
+                    from torch.cuda.amp import autocast
+                    with autocast():
+                        hr_log_probs, hr_values, hr_entropy = self.policy.evaluate(high_reward_states, high_reward_actions)
+                        
+                        # Compute ratios
+                        hr_ratios = torch.exp(hr_log_probs - high_reward_old_log_probs)
+                        
+                        # Compute surrogate losses
+                        hr_surr1 = hr_ratios * high_reward_advantages
+                        hr_surr2 = torch.clamp(hr_ratios, 1 - self.eps_clip, 1 + self.eps_clip) * high_reward_advantages
+                        hr_policy_loss = -torch.min(hr_surr1, hr_surr2).mean()
+                        
+                        # Value loss
+                        hr_value_loss = F.mse_loss(hr_values, high_reward_returns)
+                        
+                        # Entropy loss
+                        hr_entropy_loss = -hr_entropy.mean()
+                        
+                        # Total loss with higher weight for high-reward experiences
+                        hr_total_loss = 2.0 * hr_policy_loss + self.value_coef * hr_value_loss + self.entropy_coef * hr_entropy_loss
+                        
+                        # Check for NaN in losses
+                        if torch.isnan(hr_total_loss):
+                            print("Warning: NaN detected in high-reward total_loss, skipping update")
+                            continue
+                    
+                    # Update with mixed precision
+                    self.optimizer.zero_grad()
+                    self.scaler.scale(hr_total_loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    
+                    # Check for NaN gradients
+                    hr_total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    if torch.isnan(hr_total_grad_norm) or torch.isinf(hr_total_grad_norm):
+                        print("Warning: NaN/Inf detected in high-reward gradients, skipping update")
+                        self.optimizer.zero_grad()
+                        continue
+                    
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    # Get current policy outputs for high-reward experiences
+                    hr_log_probs, hr_values, hr_entropy = self.policy.evaluate(high_reward_states, high_reward_actions)
+                    
+                    # Compute ratios
+                    hr_ratios = torch.exp(hr_log_probs - high_reward_old_log_probs)
+                    
+                    # Compute surrogate losses
+                    hr_surr1 = hr_ratios * high_reward_advantages
+                    hr_surr2 = torch.clamp(hr_ratios, 1 - self.eps_clip, 1 + self.eps_clip) * high_reward_advantages
+                    hr_policy_loss = -torch.min(hr_surr1, hr_surr2).mean()
+                    
+                    # Value loss
+                    hr_value_loss = F.mse_loss(hr_values, high_reward_returns)
+                    
+                    # Entropy loss
+                    hr_entropy_loss = -hr_entropy.mean()
+                    
+                    # Total loss with higher weight for high-reward experiences
+                    hr_total_loss = 2.0 * hr_policy_loss + self.value_coef * hr_value_loss + self.entropy_coef * hr_entropy_loss
+                    
+                    # Check for NaN in losses
+                    if torch.isnan(hr_total_loss):
+                        print("Warning: NaN detected in high-reward total_loss, skipping update")
+                        continue
+                    
+                    # Update
+                    self.optimizer.zero_grad()
+                    hr_total_loss.backward()
+                    
+                    # Check for NaN gradients
+                    hr_total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    if torch.isnan(hr_total_grad_norm) or torch.isinf(hr_total_grad_norm):
+                        print("Warning: NaN/Inf detected in high-reward gradients, skipping update")
+                        self.optimizer.zero_grad()
+                        continue
+                    
+                    self.optimizer.step()
+                
+                # Store high-reward losses for statistics
+                policy_losses.append(hr_policy_loss.item())
+                value_losses.append(hr_value_loss.item())
+                entropy_losses.append(hr_entropy_loss.item())
+                
+                # Clear cache to free memory
+                if self.device == 'cuda':
+                    torch.cuda.empty_cache()
+        
         # Store training statistics (averaged over all mini-batches)
         if policy_losses:
             self.training_stats['policy_loss'].append(np.mean(policy_losses))
@@ -544,9 +672,9 @@ class PPOAgent:
 
 
 class PPOMemory:
-    """Memory buffer for storing PPO experiences."""
+    """Memory buffer for storing PPO experiences with high-reward prioritization."""
     
-    def __init__(self, max_size=2000):
+    def __init__(self, max_size=2000, high_reward_threshold=1.5):
         self.states = []
         self.actions = []
         self.rewards = []
@@ -555,9 +683,11 @@ class PPOMemory:
         self.log_probs = []
         self.values = []
         self.max_size = max_size
+        self.high_reward_threshold = high_reward_threshold
+        self.high_reward_indices = []  # Track indices of high-reward experiences
     
     def store(self, state, action, reward, next_state, done, log_prob, value):
-        """Store a transition."""
+        """Store a transition with high-reward prioritization."""
         self.states.append(state)
         self.actions.append(action)
         self.rewards.append(reward)
@@ -566,8 +696,13 @@ class PPOMemory:
         self.log_probs.append(log_prob)
         self.values.append(value)
         
+        # Track high-reward experiences
+        if reward >= self.high_reward_threshold:
+            self.high_reward_indices.append(len(self.states) - 1)
+        
         # Limit memory size to prevent memory issues
         if len(self.states) > self.max_size:
+            # Remove oldest experience
             self.states.pop(0)
             self.actions.pop(0)
             self.rewards.pop(0)
@@ -575,6 +710,9 @@ class PPOMemory:
             self.dones.pop(0)
             self.log_probs.pop(0)
             self.values.pop(0)
+            
+            # Update high-reward indices
+            self.high_reward_indices = [idx - 1 for idx in self.high_reward_indices if idx > 0]
     
     def clear(self):
         """Clear all stored data."""
@@ -585,6 +723,32 @@ class PPOMemory:
         self.dones.clear()
         self.log_probs.clear()
         self.values.clear()
+        self.high_reward_indices.clear()
+    
+    def get_high_reward_experiences(self, num_samples=None):
+        """Get high-reward experiences for prioritized replay."""
+        if not self.high_reward_indices:
+            return None
+        
+        if num_samples is None:
+            num_samples = min(len(self.high_reward_indices), 32)  # Default batch size
+        
+        # Sample from high-reward experiences
+        selected_indices = np.random.choice(
+            self.high_reward_indices, 
+            size=min(num_samples, len(self.high_reward_indices)), 
+            replace=False
+        )
+        
+        return {
+            'states': [self.states[i] for i in selected_indices],
+            'actions': [self.actions[i] for i in selected_indices],
+            'rewards': [self.rewards[i] for i in selected_indices],
+            'next_states': [self.next_states[i] for i in selected_indices],
+            'dones': [self.dones[i] for i in selected_indices],
+            'log_probs': [self.log_probs[i] for i in selected_indices],
+            'values': [self.values[i] for i in selected_indices]
+        }
 
 
 def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500, 
@@ -669,7 +833,8 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
         if episode % 10 == 0:
             avg_reward = np.mean(agent.training_stats['episode_rewards'][-10:])
             avg_length = np.mean(agent.training_stats['episode_lengths'][-10:])
-            print(f"Episode {episode}, Avg Reward: {avg_reward:.2f}, Avg Length: {avg_length:.2f}")
+            high_reward_count = len(agent.memory.high_reward_indices)
+            print(f"Episode {episode}, Avg Reward: {avg_reward:.2f}, Avg Length: {avg_length:.2f}, High-Reward Samples: {high_reward_count}")
         
         if save_best_only:
                 # Create proper filename: replace .pth with _best.pth
@@ -709,6 +874,7 @@ if __name__ == "__main__":
     parser.add_argument('--save_best_only', action='store_true', help='Save only the best model (overwrites previous best)')
     parser.add_argument('--enable_viewer', action='store_true', help='Enable MuJoCo viewer')
     parser.add_argument('--visualize_collision_boxes', action='store_true', help='Visualize collision boxes')
+    parser.add_argument('--high_reward_threshold', type=float, default=1.5, help='Reward threshold for high-reward experience prioritization')
     parser.add_argument('--project', type=str, default='mujoco-rubiks-ppo', help='wandb project name')
     parser.add_argument('--run_name', type=str, default=None, help='wandb run name')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
@@ -771,6 +937,7 @@ if __name__ == "__main__":
         device=device,
         use_mixed_precision=args.use_mixed_precision,
         batch_size=args.batch_size,
+        high_reward_threshold=args.high_reward_threshold,
     )
 
     # Train

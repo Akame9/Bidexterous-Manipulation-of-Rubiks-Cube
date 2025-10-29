@@ -314,6 +314,117 @@ class InteractiveRewardViewerGUI:
         # For simplicity, we'll print to console
         pass
     
+    def get_state_vector(self) -> np.ndarray:
+        """Get current state vector (similar to rubiks_cube.py get_state method)."""
+        # Joint positions and velocities
+        joint_pos = self.data.qpos.copy()
+        joint_vel = self.data.qvel.copy()
+        
+        # Cube state (position, orientation, velocities)
+        cube_body_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, "core")
+        if cube_body_id != -1:
+            cube_pos = self.data.xpos[cube_body_id].copy()
+            cube_quat = self.data.xquat[cube_body_id].copy()
+            cvel = self.data.cvel[cube_body_id].copy()  # [ang(3), lin(3)] in world frame
+            cube_ang_vel = cvel[:3]
+            cube_lin_vel = cvel[3:]
+        else:
+            cube_pos = np.zeros(3)
+            cube_quat = np.array([1.0, 0.0, 0.0, 0.0])
+            cube_lin_vel = np.zeros(3)
+            cube_ang_vel = np.zeros(3)
+        
+        # Contact forces
+        contact_force = self._get_contact_forces()
+        
+        # Current hand actions (control values for hand actuators)
+        prev_actions = self.data.ctrl[self.hand_actuators].copy()
+        
+        # Combine all state components
+        state = np.concatenate([
+            joint_pos,
+            joint_vel,
+            cube_pos,
+            cube_quat,
+            cube_lin_vel,
+            cube_ang_vel,
+            contact_force,
+            prev_actions
+        ])
+        
+        return state.astype(np.float32)
+    
+    def print_state_space(self):
+        """Print detailed state space information."""
+        state = self.get_state_vector()
+        
+        # Extract components from state vector
+        joint_pos_len = self.model.nq
+        joint_vel_len = self.model.nv
+        
+        joint_pos = state[:joint_pos_len]
+        joint_vel = state[joint_pos_len:joint_pos_len + joint_vel_len]
+        cube_pos = state[joint_pos_len + joint_vel_len:joint_pos_len + joint_vel_len + 3]
+        cube_quat = state[joint_pos_len + joint_vel_len + 3:joint_pos_len + joint_vel_len + 7]
+        cube_lin_vel = state[joint_pos_len + joint_vel_len + 7:joint_pos_len + joint_vel_len + 10]
+        cube_ang_vel = state[joint_pos_len + joint_vel_len + 10:joint_pos_len + joint_vel_len + 13]
+        contact_force = state[joint_pos_len + joint_vel_len + 13:joint_pos_len + joint_vel_len + 16]
+        prev_actions = state[joint_pos_len + joint_vel_len + 16:]
+        
+        print("\n" + "=" * 80)
+        print("STATE SPACE ANALYSIS")
+        print("=" * 80)
+        
+        # Joint positions
+        print(f"\nJOINT POSITIONS ({len(joint_pos)} values):")
+        print(f"  Range: [{joint_pos.min():.4f}, {joint_pos.max():.4f}]")
+        print(f"  Mean: {joint_pos.mean():.4f}, Std: {joint_pos.std():.4f}")
+        print(f"  Sample values: {joint_pos[:5]} ... {joint_pos[-5:]}")
+        
+        # Joint velocities
+        print(f"\nJOINT VELOCITIES ({len(joint_vel)} values):")
+        print(f"  Range: [{joint_vel.min():.4f}, {joint_vel.max():.4f}]")
+        print(f"  Mean: {joint_vel.mean():.4f}, Std: {joint_vel.std():.4f}")
+        print(f"  Sample values: {joint_vel[:5]} ... {joint_vel[-5:]}")
+        
+        # Cube position
+        print(f"\nCUBE POSITION (3 values):")
+        print(f"  X: {cube_pos[0]:.4f}, Y: {cube_pos[1]:.4f}, Z: {cube_pos[2]:.4f}")
+        print(f"  Distance from origin: {np.linalg.norm(cube_pos):.4f}")
+        
+        # Cube orientation (quaternion)
+        print(f"\nCUBE ORIENTATION (4 values - quaternion):")
+        print(f"  W: {cube_quat[0]:.4f}, X: {cube_quat[1]:.4f}, Y: {cube_quat[2]:.4f}, Z: {cube_quat[3]:.4f}")
+        print(f"  Quaternion norm: {np.linalg.norm(cube_quat):.4f}")
+        
+        # Cube velocities
+        print(f"\nCUBE LINEAR VELOCITY (3 values):")
+        print(f"  X: {cube_lin_vel[0]:.4f}, Y: {cube_lin_vel[1]:.4f}, Z: {cube_lin_vel[2]:.4f}")
+        print(f"  Speed: {np.linalg.norm(cube_lin_vel):.4f}")
+        
+        print(f"\nCUBE ANGULAR VELOCITY (3 values):")
+        print(f"  X: {cube_ang_vel[0]:.4f}, Y: {cube_ang_vel[1]:.4f}, Z: {cube_ang_vel[2]:.4f}")
+        print(f"  Angular speed: {np.linalg.norm(cube_ang_vel):.4f}")
+        
+        # Contact forces
+        print(f"\nCONTACT FORCES (3 values):")
+        print(f"  X: {contact_force[0]:.4f}, Y: {contact_force[1]:.4f}, Z: {contact_force[2]:.4f}")
+        print(f"  Force magnitude: {np.linalg.norm(contact_force):.4f}")
+        
+        # Previous actions
+        print(f"\nPREVIOUS ACTIONS ({len(prev_actions)} values):")
+        print(f"  Range: [{prev_actions.min():.4f}, {prev_actions.max():.4f}]")
+        print(f"  Mean: {prev_actions.mean():.4f}, Std: {prev_actions.std():.4f}")
+        print(f"  Sample values: {prev_actions[:5]} ... {prev_actions[-5:]}")
+        
+        # Total state info
+        print(f"\nTOTAL STATE VECTOR:")
+        print(f"  Dimension: {len(state)}")
+        print(f"  Range: [{state.min():.4f}, {state.max():.4f}]")
+        print(f"  Mean: {state.mean():.4f}, Std: {state.std():.4f}")
+        
+        print("=" * 80)
+    
     def print_status(self):
         """Print status to console."""
         # Clear screen (works on most terminals)
@@ -331,6 +442,7 @@ class InteractiveRewardViewerGUI:
             print("  R        : Reset current actuator")
             print("  SPACE    : Reset all to neutral")
             print("  H        : Toggle help")
+            print("  S        : Print state space analysis")
             print("  ESC      : Exit")
             print()
         
@@ -396,6 +508,8 @@ class InteractiveRewardViewerGUI:
             elif keycode in [72, 104]:  # H
                 self.show_help = not self.show_help
                 self.print_status()
+            elif keycode in [83, 115]:  # S
+                self.print_state_space()
             elif keycode == 258:  # TAB
                 self.select_next_actuator()
                 self.print_status()
