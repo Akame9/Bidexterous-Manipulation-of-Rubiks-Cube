@@ -302,14 +302,37 @@ class PPOAgent:
         # Compute advantages and returns
         advantages, returns = self.compute_gae(rewards, old_values, dones)
         
+        # Analyze data ranges for better clipping
+        print(f"Data Analysis - Rewards: [{rewards.min().item():.3f}, {rewards.max().item():.3f}] (mean: {rewards.mean().item():.3f})")
+        print(f"Data Analysis - Returns: [{returns.min().item():.3f}, {returns.max().item():.3f}] (mean: {returns.mean().item():.3f})")
+        print(f"Data Analysis - Old Values: [{old_values.min().item():.3f}, {old_values.max().item():.3f}] (mean: {old_values.mean().item():.3f})")
+        
+        # Analyze reward distribution
+        reward_2_count = (rewards == 2.0).sum().item()
+        reward_1_count = (rewards == 1.0).sum().item()
+        print(f"Data Analysis - Reward 2.0: {reward_2_count} times, Reward 1.0: {reward_1_count} times")
+        
+        # Dynamic clipping based on data percentiles
+        returns_std = returns.std().item()
+        returns_mean = returns.mean().item()
+        returns_clip = max(abs(returns_mean) + 3 * returns_std, 10.0)  # 3-sigma rule, min 10
+        returns = torch.clamp(returns, min=-returns_clip, max=returns_clip)
+        print(f"Data Analysis - Returns clipped to: [{-returns_clip:.3f}, {returns_clip:.3f}]")
+        
         # Debug: Print shapes after GAE computation
         # print(f"After GAE computation:")
         # print(f"  advantages shape: {advantages.shape}")
         # print(f"  returns shape: {returns.shape}")
         # print(f"  old_values shape: {old_values.shape}")
         
-        # Normalize advantages
+        # Normalize advantages with dynamic clipping
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        
+        # Dynamic advantage clipping based on normalized distribution
+        adv_std = advantages.std().item()
+        adv_clip = max(3.0, adv_std * 2)  # 2-sigma rule, min 3
+        advantages = torch.clamp(advantages, min=-adv_clip, max=adv_clip)
+        print(f"Data Analysis - Advantages clipped to: [{-adv_clip:.3f}, {adv_clip:.3f}]")
         
         # Process high-reward experiences if available
         high_reward_states = None
@@ -365,25 +388,56 @@ class PPOAgent:
                         # Get current policy outputs
                         log_probs, values, entropy = self.policy.evaluate(batch_states, batch_actions)
                         
-                        # Compute ratios
-                        ratios = torch.exp(log_probs - batch_old_log_probs)
+                        # Compute ratios with PPO-appropriate clipping
+                        log_ratio = log_probs - batch_old_log_probs
+                        
+                        # PPO theory: ratios should be close to 1.0, so log_ratio should be close to 0
+                        # Clip to reasonable range: exp(±2) ≈ [0.135, 7.39], which is reasonable for PPO
+                        log_ratio = torch.clamp(log_ratio, min=-2.0, max=2.0)
+                        ratios = torch.exp(log_ratio)
+                        
+                        # Additional safety: clip ratios themselves
+                        ratios = torch.clamp(ratios, min=0.1, max=10.0)
                         
                         # Compute surrogate losses
                         surr1 = ratios * batch_advantages
                         surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * batch_advantages
                         policy_loss = -torch.min(surr1, surr2).mean()
                         
-                        # Value loss
+                        # Debug: Log extreme values (commented out due to variable scope)
+                        # if len(policy_losses) % 100 == 0:
+                        #     print(f"Debug - Log ratio range: [{log_ratio.min().item():.4f}, {log_ratio.max().item():.4f}]")
+                        #     print(f"Debug - Ratios range: [{ratios.min().item():.4f}, {ratios.max().item():.4f}]")
+                        #     print(f"Debug - Advantages range: [{batch_advantages.min().item():.4f}, {batch_advantages.max().item():.4f}]")
+                        #     print(f"Debug - Policy loss: {policy_loss.item():.4f}")
+                        
+                        # Value loss with clipping
                         value_loss = F.mse_loss(values, batch_returns)
                         
                         # Entropy loss
                         entropy_loss = -entropy.mean()
                         
+                        # Debug: Log all loss components (commented out due to variable scope)
+                        # if len(policy_losses) % 100 == 0:
+                        #     print(f"Debug - Values range: [{values.min().item():.4f}, {values.max().item():.4f}]")
+                        #     print(f"Debug - Returns range: [{batch_returns.min().item():.4f}, {batch_returns.max().item():.4f}]")
+                        #     print(f"Debug - Value loss: {value_loss.item():.4f}")
+                        #     print(f"Debug - Entropy: {entropy.mean().item():.4f}, Entropy Loss: {entropy_loss.item():.4f}")
+                        #     print(f"Debug - Action std mean: {action_std.mean().item():.4f}, Action std max: {action_std.max().item():.4f}")
+                        
                         # Total loss
                         total_loss = policy_loss + self.value_coef * value_loss + self.entropy_coef * entropy_loss
                         
-                        # Check for NaN in losses
-                        if torch.isnan(total_loss):
+                        # Check for loss explosion
+                        if torch.isnan(total_loss) or torch.isinf(total_loss) or total_loss.item() > 1e6:
+                            print(f"Warning: Loss explosion detected! Policy: {policy_loss.item():.2e}, Value: {value_loss.item():.2e}, Total: {total_loss.item():.2e}")
+                            self.nan_count += 1
+                            if self.nan_count >= self.max_nan_count:
+                                print("Too many loss explosions, resetting model weights")
+                                self._reset_model_weights()
+                                self.nan_count = 0
+                            continue
+                        elif torch.isnan(total_loss):
                             print("Warning: NaN detected in total_loss, skipping update")
                             self.nan_count += 1
                             if self.nan_count >= self.max_nan_count:
@@ -412,8 +466,16 @@ class PPOAgent:
                     # Get current policy outputs
                     log_probs, values, entropy = self.policy.evaluate(batch_states, batch_actions)
                     
-                    # Compute ratios
-                    ratios = torch.exp(log_probs - batch_old_log_probs)
+                    # Compute ratios with PPO-appropriate clipping
+                    log_ratio = log_probs - batch_old_log_probs
+                    
+                    # PPO theory: ratios should be close to 1.0, so log_ratio should be close to 0
+                    # Clip to reasonable range: exp(±2) ≈ [0.135, 7.39], which is reasonable for PPO
+                    log_ratio = torch.clamp(log_ratio, min=-2.0, max=2.0)
+                    ratios = torch.exp(log_ratio)
+                    
+                    # Additional safety: clip ratios themselves
+                    ratios = torch.clamp(ratios, min=0.1, max=10.0)
                     
                     # Compute surrogate losses
                     surr1 = ratios * batch_advantages
@@ -429,8 +491,16 @@ class PPOAgent:
                     # Total loss
                     total_loss = policy_loss + self.value_coef * value_loss + self.entropy_coef * entropy_loss
                     
-                    # Check for NaN in losses
-                    if torch.isnan(total_loss):
+                    # Check for loss explosion
+                    if torch.isnan(total_loss) or torch.isinf(total_loss) or total_loss.item() > 1e6:
+                        print(f"Warning: Loss explosion detected! Policy: {policy_loss.item():.2e}, Value: {value_loss.item():.2e}, Total: {total_loss.item():.2e}")
+                        self.nan_count += 1
+                        if self.nan_count >= self.max_nan_count:
+                            print("Too many loss explosions, resetting model weights")
+                            self._reset_model_weights()
+                            self.nan_count = 0
+                        continue
+                    elif torch.isnan(total_loss):
                         print("Warning: NaN detected in total_loss, skipping update")
                         self.nan_count += 1
                         if self.nan_count >= self.max_nan_count:
