@@ -219,6 +219,12 @@ class PPOAgent:
         else:
             self.scaler = None
             
+        # Data-driven entropy cap (EMA over batches)
+        self.entropy_ema_beta = 0.95
+        self.entropy_ema_mean = 0.0
+        self.entropy_ema_sq = 1.0
+        self.entropy_cap_k = 2.0  # cap at mean + k*std
+
         # Track best reward for saving best model
         self.best_reward = float('-inf')
         
@@ -414,8 +420,16 @@ class PPOAgent:
                         # Value loss with clipping
                         value_loss = F.mse_loss(values, batch_returns)
                         
-                        # Entropy loss
-                        entropy_loss = -entropy.mean()
+                        # Entropy loss with data-driven capping (EMA-based)
+                        batch_entropy_mean = entropy.mean().detach().item()
+                        # Update EMA of mean and squared mean
+                        self.entropy_ema_mean = self.entropy_ema_beta * self.entropy_ema_mean + (1 - self.entropy_ema_beta) * batch_entropy_mean
+                        self.entropy_ema_sq = self.entropy_ema_beta * self.entropy_ema_sq + (1 - self.entropy_ema_beta) * (batch_entropy_mean ** 2)
+                        ema_var = max(0.0, self.entropy_ema_sq - self.entropy_ema_mean * self.entropy_ema_mean)
+                        ema_std = ema_var ** 0.5
+                        cap_value = max(0.0, self.entropy_ema_mean + self.entropy_cap_k * ema_std)
+                        entropy_capped_value = min(batch_entropy_mean, cap_value)
+                        entropy_loss = -torch.tensor(entropy_capped_value, device=self.device)
                         
                         # Debug: Log all loss components (commented out due to variable scope)
                         # if len(policy_losses) % 100 == 0:
@@ -485,8 +499,16 @@ class PPOAgent:
                     # Value loss
                     value_loss = F.mse_loss(values, batch_returns)
                     
-                    # Entropy loss
-                    entropy_loss = -entropy.mean()
+                    # Entropy loss with data-driven capping (EMA-based)
+                    batch_entropy_mean = entropy.mean().detach().item()
+                    # Update EMA of mean and squared mean
+                    self.entropy_ema_mean = self.entropy_ema_beta * self.entropy_ema_mean + (1 - self.entropy_ema_beta) * batch_entropy_mean
+                    self.entropy_ema_sq = self.entropy_ema_beta * self.entropy_ema_sq + (1 - self.entropy_ema_beta) * (batch_entropy_mean ** 2)
+                    ema_var = max(0.0, self.entropy_ema_sq - self.entropy_ema_mean * self.entropy_ema_mean)
+                    ema_std = ema_var ** 0.5
+                    cap_value = max(0.0, self.entropy_ema_mean + self.entropy_cap_k * ema_std)
+                    entropy_capped_value = min(batch_entropy_mean, cap_value)
+                    entropy_loss = -torch.tensor(entropy_capped_value, device=self.device)
                     
                     # Total loss
                     total_loss = policy_loss + self.value_coef * value_loss + self.entropy_coef * entropy_loss
