@@ -318,25 +318,25 @@ class PPOAgent:
         high_reward_advantages = None
         high_reward_returns = None
         
-        if high_reward_data is not None and len(high_reward_data['states']) > 0:
-            # Convert high-reward data to tensors
-            high_reward_states = torch.FloatTensor(high_reward_data['states']).to(self.device)
-            high_reward_actions = torch.FloatTensor(high_reward_data['actions']).to(self.device)
-            high_reward_rewards = torch.FloatTensor(high_reward_data['rewards']).to(self.device)
-            high_reward_dones = torch.BoolTensor(high_reward_data['dones']).to(self.device)
-            high_reward_old_log_probs = torch.FloatTensor(high_reward_data['log_probs']).to(self.device)
-            high_reward_old_values = torch.FloatTensor(high_reward_data['values']).to(self.device).view(-1, 1)
+        # if high_reward_data is not None and len(high_reward_data['states']) > 0:
+        #     # Convert high-reward data to tensors
+        #     high_reward_states = torch.FloatTensor(high_reward_data['states']).to(self.device)
+        #     high_reward_actions = torch.FloatTensor(high_reward_data['actions']).to(self.device)
+        #     high_reward_rewards = torch.FloatTensor(high_reward_data['rewards']).to(self.device)
+        #     high_reward_dones = torch.BoolTensor(high_reward_data['dones']).to(self.device)
+        #     high_reward_old_log_probs = torch.FloatTensor(high_reward_data['log_probs']).to(self.device)
+        #     high_reward_old_values = torch.FloatTensor(high_reward_data['values']).to(self.device).view(-1, 1)
             
-            # Compute advantages and returns for high-reward experiences
-            high_reward_advantages, high_reward_returns = self.compute_gae(
-                high_reward_rewards, high_reward_old_values, high_reward_dones
-            )
+        #     # Compute advantages and returns for high-reward experiences
+        #     high_reward_advantages, high_reward_returns = self.compute_gae(
+        #         high_reward_rewards, high_reward_old_values, high_reward_dones
+        #     )
             
-            # Normalize high-reward advantages using the same normalization as regular data
-            if len(high_reward_advantages) > 1:
-                high_reward_advantages = (high_reward_advantages - high_reward_advantages.mean()) / (high_reward_advantages.std() + 1e-8)
-            else:
-                high_reward_advantages = high_reward_advantages - high_reward_advantages.mean()
+        #     # Normalize high-reward advantages using the same normalization as regular data
+        #     if len(high_reward_advantages) > 1:
+        #         high_reward_advantages = (high_reward_advantages - high_reward_advantages.mean()) / (high_reward_advantages.std() + 1e-8)
+        #     else:
+        #         high_reward_advantages = high_reward_advantages - high_reward_advantages.mean()
         
         # PPO update with mini-batches
         total_samples = len(states)
@@ -463,101 +463,101 @@ class PPOAgent:
                 if self.device == 'cuda':
                     torch.cuda.empty_cache()
         
-        # Additional training on high-reward experiences if available
-        if high_reward_states is not None and len(high_reward_states) > 0:
-            print(f"Training on {len(high_reward_states)} high-reward experiences")
+        # # Additional training on high-reward experiences if available
+        # if high_reward_states is not None and len(high_reward_states) > 0:
+        #     print(f"Training on {len(high_reward_states)} high-reward experiences")
             
-            # Train on high-reward experiences for additional epochs
-            for _ in range(min(2, self.k_epochs)):  # Use fewer epochs for high-reward data
-                # Get current policy outputs for high-reward experiences
-                if self.use_mixed_precision:
-                    from torch.cuda.amp import autocast
-                    with autocast():
-                        hr_log_probs, hr_values, hr_entropy = self.policy.evaluate(high_reward_states, high_reward_actions)
+        #     # Train on high-reward experiences for additional epochs
+        #     for _ in range(min(2, self.k_epochs)):  # Use fewer epochs for high-reward data
+        #         # Get current policy outputs for high-reward experiences
+        #         if self.use_mixed_precision:
+        #             from torch.cuda.amp import autocast
+        #             with autocast():
+        #                 hr_log_probs, hr_values, hr_entropy = self.policy.evaluate(high_reward_states, high_reward_actions)
                         
-                        # Compute ratios
-                        hr_ratios = torch.exp(hr_log_probs - high_reward_old_log_probs)
+        #                 # Compute ratios
+        #                 hr_ratios = torch.exp(hr_log_probs - high_reward_old_log_probs)
                         
-                        # Compute surrogate losses
-                        hr_surr1 = hr_ratios * high_reward_advantages
-                        hr_surr2 = torch.clamp(hr_ratios, 1 - self.eps_clip, 1 + self.eps_clip) * high_reward_advantages
-                        hr_policy_loss = -torch.min(hr_surr1, hr_surr2).mean()
+        #                 # Compute surrogate losses
+        #                 hr_surr1 = hr_ratios * high_reward_advantages
+        #                 hr_surr2 = torch.clamp(hr_ratios, 1 - self.eps_clip, 1 + self.eps_clip) * high_reward_advantages
+        #                 hr_policy_loss = -torch.min(hr_surr1, hr_surr2).mean()
                         
-                        # Value loss
-                        hr_value_loss = F.mse_loss(hr_values, high_reward_returns)
+        #                 # Value loss
+        #                 hr_value_loss = F.mse_loss(hr_values, high_reward_returns)
                         
-                        # Entropy loss
-                        hr_entropy_loss = -hr_entropy.mean()
+        #                 # Entropy loss
+        #                 hr_entropy_loss = -hr_entropy.mean()
                         
-                        # Total loss with higher weight for high-reward experiences
-                        hr_total_loss = 2.0 * hr_policy_loss + self.value_coef * hr_value_loss + self.entropy_coef * hr_entropy_loss
+        #                 # Total loss with higher weight for high-reward experiences
+        #                 hr_total_loss = 2.0 * hr_policy_loss + self.value_coef * hr_value_loss + self.entropy_coef * hr_entropy_loss
                         
-                        # Check for NaN in losses
-                        if torch.isnan(hr_total_loss):
-                            print("Warning: NaN detected in high-reward total_loss, skipping update")
-                            continue
+        #                 # Check for NaN in losses
+        #                 if torch.isnan(hr_total_loss):
+        #                     print("Warning: NaN detected in high-reward total_loss, skipping update")
+        #                     continue
                     
-                    # Update with mixed precision
-                    self.optimizer.zero_grad()
-                    self.scaler.scale(hr_total_loss).backward()
-                    self.scaler.unscale_(self.optimizer)
+        #             # Update with mixed precision
+        #             self.optimizer.zero_grad()
+        #             self.scaler.scale(hr_total_loss).backward()
+        #             self.scaler.unscale_(self.optimizer)
                     
-                    # Check for NaN gradients
-                    hr_total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                    if torch.isnan(hr_total_grad_norm) or torch.isinf(hr_total_grad_norm):
-                        print("Warning: NaN/Inf detected in high-reward gradients, skipping update")
-                        self.optimizer.zero_grad()
-                        continue
+        #             # Check for NaN gradients
+        #             hr_total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+        #             if torch.isnan(hr_total_grad_norm) or torch.isinf(hr_total_grad_norm):
+        #                 print("Warning: NaN/Inf detected in high-reward gradients, skipping update")
+        #                 self.optimizer.zero_grad()
+        #                 continue
                     
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    # Get current policy outputs for high-reward experiences
-                    hr_log_probs, hr_values, hr_entropy = self.policy.evaluate(high_reward_states, high_reward_actions)
+        #             self.scaler.step(self.optimizer)
+        #             self.scaler.update()
+        #         else:
+        #             # Get current policy outputs for high-reward experiences
+        #             hr_log_probs, hr_values, hr_entropy = self.policy.evaluate(high_reward_states, high_reward_actions)
                     
-                    # Compute ratios
-                    hr_ratios = torch.exp(hr_log_probs - high_reward_old_log_probs)
+        #             # Compute ratios
+        #             hr_ratios = torch.exp(hr_log_probs - high_reward_old_log_probs)
                     
-                    # Compute surrogate losses
-                    hr_surr1 = hr_ratios * high_reward_advantages
-                    hr_surr2 = torch.clamp(hr_ratios, 1 - self.eps_clip, 1 + self.eps_clip) * high_reward_advantages
-                    hr_policy_loss = -torch.min(hr_surr1, hr_surr2).mean()
+        #             # Compute surrogate losses
+        #             hr_surr1 = hr_ratios * high_reward_advantages
+        #             hr_surr2 = torch.clamp(hr_ratios, 1 - self.eps_clip, 1 + self.eps_clip) * high_reward_advantages
+        #             hr_policy_loss = -torch.min(hr_surr1, hr_surr2).mean()
                     
-                    # Value loss
-                    hr_value_loss = F.mse_loss(hr_values, high_reward_returns)
+        #             # Value loss
+        #             hr_value_loss = F.mse_loss(hr_values, high_reward_returns)
                     
-                    # Entropy loss
-                    hr_entropy_loss = -hr_entropy.mean()
+        #             # Entropy loss
+        #             hr_entropy_loss = -hr_entropy.mean()
                     
-                    # Total loss with higher weight for high-reward experiences
-                    hr_total_loss = 2.0 * hr_policy_loss + self.value_coef * hr_value_loss + self.entropy_coef * hr_entropy_loss
+        #             # Total loss with higher weight for high-reward experiences
+        #             hr_total_loss = 2.0 * hr_policy_loss + self.value_coef * hr_value_loss + self.entropy_coef * hr_entropy_loss
                     
-                    # Check for NaN in losses
-                    if torch.isnan(hr_total_loss):
-                        print("Warning: NaN detected in high-reward total_loss, skipping update")
-                        continue
+        #             # Check for NaN in losses
+        #             if torch.isnan(hr_total_loss):
+        #                 print("Warning: NaN detected in high-reward total_loss, skipping update")
+        #                 continue
                     
-                    # Update
-                    self.optimizer.zero_grad()
-                    hr_total_loss.backward()
+        #             # Update
+        #             self.optimizer.zero_grad()
+        #             hr_total_loss.backward()
                     
-                    # Check for NaN gradients
-                    hr_total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                    if torch.isnan(hr_total_grad_norm) or torch.isinf(hr_total_grad_norm):
-                        print("Warning: NaN/Inf detected in high-reward gradients, skipping update")
-                        self.optimizer.zero_grad()
-                        continue
+        #             # Check for NaN gradients
+        #             hr_total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+        #             if torch.isnan(hr_total_grad_norm) or torch.isinf(hr_total_grad_norm):
+        #                 print("Warning: NaN/Inf detected in high-reward gradients, skipping update")
+        #                 self.optimizer.zero_grad()
+        #                 continue
                     
-                    self.optimizer.step()
+        #             self.optimizer.step()
                 
-                # Store high-reward losses for statistics
-                policy_losses.append(hr_policy_loss.item())
-                value_losses.append(hr_value_loss.item())
-                entropy_losses.append(hr_entropy_loss.item())
+        #         # Store high-reward losses for statistics
+        #         policy_losses.append(hr_policy_loss.item())
+        #         value_losses.append(hr_value_loss.item())
+        #         entropy_losses.append(hr_entropy_loss.item())
                 
-                # Clear cache to free memory
-                if self.device == 'cuda':
-                    torch.cuda.empty_cache()
+        #         # Clear cache to free memory
+        #         if self.device == 'cuda':
+        #             torch.cuda.empty_cache()
         
         # Store training statistics (averaged over all mini-batches)
         if policy_losses:
