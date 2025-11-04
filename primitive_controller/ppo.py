@@ -98,8 +98,8 @@ class ActorCritic(nn.Module):
         # Actor head (policy network)
         self.actor_mean = nn.Linear(hidden_dim, action_dim)
 
-        # AATHIRA : Make std a global learnable parameter. The std should be same for all actions.
-        self.actor_std = nn.Linear(hidden_dim, action_dim)
+        # DONE AATHIRA : Make std a global learnable parameter. The std should be same for all actions.
+        self.actor_logstd = nn.Parameter(torch.zeros(1, action_dim)) #nn.Linear(hidden_dim, action_dim)
         
         # Critic head (value network)
         self.critic = nn.Linear(hidden_dim, 1)
@@ -121,8 +121,9 @@ class ActorCritic(nn.Module):
         
         # Actor outputs
         action_mean = self.actor_mean(shared_features)
-        action_std = F.softplus(self.actor_std(shared_features)) + 1e-5  # Ensure positive std
-        
+        # action_std = F.softplus(self.actor_std(shared_features)) + 1e-5  # Ensure positive std
+        action_logstd = self.actor_logstd.expand_as(action_mean)
+        action_std = torch.exp(action_logstd)
         # Critic output
         value = self.critic(shared_features)
         
@@ -211,7 +212,7 @@ class PPOAgent:
         self.policy = ActorCritic(state_dim, action_dim).to(device)
         safe_lr = min(lr, 1e-4)  # Cap learning rate at 1e-4
         # AATHIRA : Use eps=1e-5 for Adam optimizer to reduce gradient variance..
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=safe_lr)
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=safe_lr, eps=1e-5, weight_decay=1e-5)
         if safe_lr != lr:
             print(f"Warning: Learning rate reduced from {lr} to {safe_lr} to prevent instability")
         
@@ -223,7 +224,6 @@ class PPOAgent:
         else:
             self.scaler = None
             
-        # AATHIRA : Don't cap entropy. It should be free to learn.
         # Data-driven entropy cap (EMA over batches)
         self.entropy_ema_beta = 0.95
         self.entropy_ema_mean = 0.0
@@ -237,7 +237,6 @@ class PPOAgent:
         self.nan_count = 0
         self.max_nan_count = 5  # Reset model after 5 consecutive NaN occurrences
         
-        # AATHIRA : Try without high rewarrd thresholds.
         # Memory for storing experiences
         self.memory = PPOMemory(high_reward_threshold=self.high_reward_threshold)
         
@@ -325,13 +324,13 @@ class PPOAgent:
         reward_1_count = (rewards == 1.0).sum().item()
         print(f"Data Analysis - Reward 2.0: {reward_2_count} times, Reward 1.0: {reward_1_count} times")
         
-        # AATHIRA : Don't clip returns. It should be free to learn.
+        # DONE AATHIRA : Don't clip returns. It should be free to learn.
         # Dynamic clipping based on data percentiles
-        returns_std = returns.std().item()
-        returns_mean = returns.mean().item()
-        returns_clip = max(abs(returns_mean) + 3 * returns_std, 10.0)  # 3-sigma rule, min 10
-        returns = torch.clamp(returns, min=-returns_clip, max=returns_clip)
-        print(f"Data Analysis - Returns clipped to: [{-returns_clip:.3f}, {returns_clip:.3f}]")
+        # returns_std = returns.std().item()
+        # returns_mean = returns.mean().item()
+        # returns_clip = max(abs(returns_mean) + 3 * returns_std, 10.0)  # 3-sigma rule, min 10
+        # returns = torch.clamp(returns, min=-returns_clip, max=returns_clip)
+        # print(f"Data Analysis - Returns clipped to: [{-returns_clip:.3f}, {returns_clip:.3f}]")
         
         # Debug: Print shapes after GAE computation
         # print(f"After GAE computation:")
@@ -342,12 +341,12 @@ class PPOAgent:
         # Normalize advantages with dynamic clipping
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
-        # AATHIRA : Don't clip advantages. It should be free to learn.
+        # DONE AATHIRA : Don't clip advantages. It should be free to learn.
         # Dynamic advantage clipping based on normalized distribution
-        adv_std = advantages.std().item()
-        adv_clip = max(3.0, adv_std * 2)  # 2-sigma rule, min 3
-        advantages = torch.clamp(advantages, min=-adv_clip, max=adv_clip)
-        print(f"Data Analysis - Advantages clipped to: [{-adv_clip:.3f}, {adv_clip:.3f}]")
+        # adv_std = advantages.std().item()
+        # adv_clip = max(3.0, adv_std * 2)  # 2-sigma rule, min 3
+        # advantages = torch.clamp(advantages, min=-adv_clip, max=adv_clip)
+        # print(f"Data Analysis - Advantages clipped to: [{-adv_clip:.3f}, {adv_clip:.3f}]")
         
         # Process high-reward experiences if available
         high_reward_states = None
@@ -378,14 +377,16 @@ class PPOAgent:
         
         # PPO update with mini-batches
         total_samples = len(states)
-        # AATHIRA : Shuffle indices under each k_epochs.
-        indices = torch.randperm(total_samples)
+        
+        
         
         policy_losses = []
         value_losses = []
         entropy_losses = []
         
         for _ in range(self.k_epochs):
+            # DONE AATHIRA : Shuffle indices under each k_epochs.
+            indices = torch.randperm(total_samples)
             for start_idx in range(0, total_samples, batch_size):
                 end_idx = min(start_idx + batch_size, total_samples)
                 batch_indices = indices[start_idx:end_idx]
@@ -409,11 +410,11 @@ class PPOAgent:
                         
                         # PPO theory: ratios should be close to 1.0, so log_ratio should be close to 0
                         # Clip to reasonable range: exp(±2) ≈ [0.135, 7.39], which is reasonable for PPO
-                        log_ratio = torch.clamp(log_ratio, min=-2.0, max=2.0)
+                        # log_ratio = torch.clamp(log_ratio, min=-2.0, max=2.0)
                         ratios = torch.exp(log_ratio)
                         
                         # Additional safety: clip ratios themselves
-                        ratios = torch.clamp(ratios, min=0.1, max=10.0)
+                        # ratios = torch.clamp(ratios, min=0.1, max=10.0)
                         
                         # Compute surrogate losses
                         surr1 = ratios * batch_advantages
@@ -430,16 +431,16 @@ class PPOAgent:
                         # Value loss with clipping
                         value_loss = F.mse_loss(values, batch_returns)
                         
-                        # Entropy loss with data-driven capping (EMA-based)
-                        batch_entropy_mean = entropy.mean().detach().item()
+                        # DONE AATHIRA : Don't cap entropy. It should be free to learn.
+                        # batch_entropy_mean = entropy.mean().detach().item()
                         # Update EMA of mean and squared mean
-                        self.entropy_ema_mean = self.entropy_ema_beta * self.entropy_ema_mean + (1 - self.entropy_ema_beta) * batch_entropy_mean
-                        self.entropy_ema_sq = self.entropy_ema_beta * self.entropy_ema_sq + (1 - self.entropy_ema_beta) * (batch_entropy_mean ** 2)
-                        ema_var = max(0.0, self.entropy_ema_sq - self.entropy_ema_mean * self.entropy_ema_mean)
-                        ema_std = ema_var ** 0.5
-                        cap_value = max(0.0, self.entropy_ema_mean + self.entropy_cap_k * ema_std)
-                        entropy_capped_value = min(batch_entropy_mean, cap_value)
-                        entropy_loss = -torch.tensor(entropy_capped_value, device=self.device)
+                        # self.entropy_ema_mean = self.entropy_ema_beta * self.entropy_ema_mean + (1 - self.entropy_ema_beta) * batch_entropy_mean
+                        # self.entropy_ema_sq = self.entropy_ema_beta * self.entropy_ema_sq + (1 - self.entropy_ema_beta) * (batch_entropy_mean ** 2)
+                        # ema_var = max(0.0, self.entropy_ema_sq - self.entropy_ema_mean * self.entropy_ema_mean)
+                        # ema_std = ema_var ** 0.5
+                        # cap_value = max(0.0, self.entropy_ema_mean + self.entropy_cap_k * ema_std)
+                        # entropy_capped_value = min(batch_entropy_mean, cap_value)
+                        entropy_loss = -entropy.mean()  # Direct entropy loss without capping
                         
                         # Debug: Log all loss components (commented out due to variable scope)
                         # if len(policy_losses) % 100 == 0:
@@ -495,13 +496,13 @@ class PPOAgent:
                     
                     # PPO theory: ratios should be close to 1.0, so log_ratio should be close to 0
                     # Clip to reasonable range: exp(±2) ≈ [0.135, 7.39], which is reasonable for PPO
-                    # AATHIRA : Don't clip log_ratio. It should be free to learn.
-                    log_ratio = torch.clamp(log_ratio, min=-2.0, max=2.0)
+                    # DONE AATHIRA : Don't clip log_ratio. It should be free to learn.
+                    # log_ratio = torch.clamp(log_ratio, min=-2.0, max=2.0)
                     ratios = torch.exp(log_ratio)
                     
                     # Additional safety: clip ratios themselves
-                    # AATHIRA : Don't clip ratios. It should be free to learn.
-                    ratios = torch.clamp(ratios, min=0.1, max=10.0)
+                    # DONE AATHIRA : Don't clip ratios. It should be free to learn.
+                    # ratios = torch.clamp(ratios, min=0.1, max=10.0)
                     
                     # Compute surrogate losses
                     surr1 = ratios * batch_advantages
@@ -511,16 +512,16 @@ class PPOAgent:
                     # Value loss
                     value_loss = F.mse_loss(values, batch_returns)
                     
-                    # Entropy loss with data-driven capping (EMA-based)
-                    batch_entropy_mean = entropy.mean().detach().item()
+                    # DONE AATHIRA : Don't cap entropy. It should be free to learn.
+                    # batch_entropy_mean = entropy.mean().detach().item()
                     # Update EMA of mean and squared mean
-                    self.entropy_ema_mean = self.entropy_ema_beta * self.entropy_ema_mean + (1 - self.entropy_ema_beta) * batch_entropy_mean
-                    self.entropy_ema_sq = self.entropy_ema_beta * self.entropy_ema_sq + (1 - self.entropy_ema_beta) * (batch_entropy_mean ** 2)
-                    ema_var = max(0.0, self.entropy_ema_sq - self.entropy_ema_mean * self.entropy_ema_mean)
-                    ema_std = ema_var ** 0.5
-                    cap_value = max(0.0, self.entropy_ema_mean + self.entropy_cap_k * ema_std)
-                    entropy_capped_value = min(batch_entropy_mean, cap_value)
-                    entropy_loss = -torch.tensor(entropy_capped_value, device=self.device)
+                    # self.entropy_ema_mean = self.entropy_ema_beta * self.entropy_ema_mean + (1 - self.entropy_ema_beta) * batch_entropy_mean
+                    # self.entropy_ema_sq = self.entropy_ema_beta * self.entropy_ema_sq + (1 - self.entropy_ema_beta) * (batch_entropy_mean ** 2)
+                    # ema_var = max(0.0, self.entropy_ema_sq - self.entropy_ema_mean * self.entropy_ema_mean)
+                    # ema_std = ema_var ** 0.5
+                    # cap_value = max(0.0, self.entropy_ema_mean + self.entropy_cap_k * ema_std)
+                    # entropy_capped_value = min(batch_entropy_mean, cap_value)
+                    entropy_loss = -entropy.mean()  # Direct entropy loss without capping
                     
                     # Total loss
                     total_loss = policy_loss + self.value_coef * value_loss + self.entropy_coef * entropy_loss
