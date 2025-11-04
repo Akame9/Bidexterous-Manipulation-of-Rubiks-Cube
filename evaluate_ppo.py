@@ -9,6 +9,8 @@ import numpy as np
 import torch
 import argparse
 import time
+import mujoco as mj
+import cv2
 
 # Add current directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -17,7 +19,8 @@ from primitive_controller.ppo import PPOAgent, get_device, print_gpu_info
 from environment.rubiks_cube import RubiksCubeEnvironment
 
 
-def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, deterministic=True):
+def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, deterministic=True,
+                   save_video=False, video_dir="videos", video_fps=30, video_width=640, video_height=480):
     """
     Evaluate the trained agent.
     
@@ -43,6 +46,14 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, det
     total_steps = 0
     
     for episode in range(num_episodes):
+        video_writer = None
+        renderer = None
+        if save_video:
+            os.makedirs(video_dir, exist_ok=True)
+            video_path = os.path.join(video_dir, f"evaluation_episode_{episode+1}.mp4")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            video_writer = cv2.VideoWriter(video_path, fourcc, float(video_fps), (int(video_width), int(video_height)))
+            renderer = mj.Renderer(env.model, width=int(video_width), height=int(video_height))
         state = env.initialize()
         episode_reward = 0
         episode_length = 0
@@ -81,10 +92,15 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, det
                 cube_pos = info['cube_position']
                 print(f"  Step {step:4d}: Reward={reward:7.3f}, Cube pos=[{cube_pos[0]:6.3f}, {cube_pos[1]:6.3f}, {cube_pos[2]:6.3f}]")
             
-            # Render if enabled
+            # Render if enabled and/or record video
             if render:
                 env.render()
-                time.sleep(0.01)  # Small delay for better visualization
+                time.sleep(0.01)
+            if save_video and renderer is not None and video_writer is not None:
+                renderer.update_scene(env.data)
+                frame_rgb = renderer.render()
+                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                video_writer.write(frame_bgr)
             
             if done:
                 print(f"\n  Episode ended: {info.get('termination_reason', 'unknown')}")
@@ -93,6 +109,13 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, det
         episode_rewards.append(episode_reward)
         episode_lengths.append(episode_length)
         episode_infos.append(info)
+
+        if save_video and video_writer is not None:
+            video_writer.release()
+            video_writer = None
+        if renderer is not None:
+            renderer.close()
+            renderer = None
         
         print(f"\n  Episode Summary:")
         print(f"    Total Reward: {episode_reward:.2f}")
@@ -165,6 +188,18 @@ def main():
                        help='Use deterministic policy')
     parser.add_argument('--stochastic', action='store_true',
                        help='Use stochastic policy')
+
+    # Video recording arguments
+    parser.add_argument('--save_video', action='store_true',
+                       help='Save MP4 video(s) of evaluation episodes')
+    parser.add_argument('--video_dir', type=str, default='videos',
+                       help='Directory to save evaluation videos')
+    parser.add_argument('--video_fps', type=int, default=30,
+                       help='Frames per second for saved videos')
+    parser.add_argument('--video_width', type=int, default=640,
+                       help='Video width in pixels')
+    parser.add_argument('--video_height', type=int, default=480,
+                       help='Video height in pixels')
     
     # Agent arguments (must match training configuration)
     parser.add_argument('--lr', type=float, default=3e-4,
@@ -259,7 +294,12 @@ def main():
             num_episodes=args.num_episodes,
             max_steps=args.max_steps,
             render=args.enable_viewer,
-            deterministic=args.deterministic
+            deterministic=args.deterministic,
+            save_video=args.save_video,
+            video_dir=args.video_dir,
+            video_fps=args.video_fps,
+            video_width=args.video_width,
+            video_height=args.video_height
         )
         
         # Save results

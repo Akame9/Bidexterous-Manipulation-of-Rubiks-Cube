@@ -97,6 +97,8 @@ class ActorCritic(nn.Module):
         
         # Actor head (policy network)
         self.actor_mean = nn.Linear(hidden_dim, action_dim)
+
+        # AATHIRA : Make std a global learnable parameter. The std should be same for all actions.
         self.actor_std = nn.Linear(hidden_dim, action_dim)
         
         # Critic head (value network)
@@ -124,6 +126,7 @@ class ActorCritic(nn.Module):
         # Critic output
         value = self.critic(shared_features)
         
+        # AATHIRA : The network should not produce Nan values.
         # Check for NaN values and replace with zeros if found
         if torch.isnan(action_mean).any():
             print("Warning: NaN detected in action_mean, replacing with zeros")
@@ -207,6 +210,7 @@ class PPOAgent:
         # Initialize networks
         self.policy = ActorCritic(state_dim, action_dim).to(device)
         safe_lr = min(lr, 1e-4)  # Cap learning rate at 1e-4
+        # AATHIRA : Use eps=1e-5 for Adam optimizer to reduce gradient variance..
         self.optimizer = optim.Adam(self.policy.parameters(), lr=safe_lr)
         if safe_lr != lr:
             print(f"Warning: Learning rate reduced from {lr} to {safe_lr} to prevent instability")
@@ -219,6 +223,7 @@ class PPOAgent:
         else:
             self.scaler = None
             
+        # AATHIRA : Don't cap entropy. It should be free to learn.
         # Data-driven entropy cap (EMA over batches)
         self.entropy_ema_beta = 0.95
         self.entropy_ema_mean = 0.0
@@ -232,6 +237,7 @@ class PPOAgent:
         self.nan_count = 0
         self.max_nan_count = 5  # Reset model after 5 consecutive NaN occurrences
         
+        # AATHIRA : Try without high rewarrd thresholds.
         # Memory for storing experiences
         self.memory = PPOMemory(high_reward_threshold=self.high_reward_threshold)
         
@@ -258,6 +264,7 @@ class PPOAgent:
             log_prob: Log probability of action
             value: State value estimate
         """
+        # AATHIRA : The network should not produce Nan values.
         # Validate input state
         if np.isnan(state).any() or np.isinf(state).any():
             print("Warning: NaN/Inf detected in input state, replacing with zeros")
@@ -318,6 +325,7 @@ class PPOAgent:
         reward_1_count = (rewards == 1.0).sum().item()
         print(f"Data Analysis - Reward 2.0: {reward_2_count} times, Reward 1.0: {reward_1_count} times")
         
+        # AATHIRA : Don't clip returns. It should be free to learn.
         # Dynamic clipping based on data percentiles
         returns_std = returns.std().item()
         returns_mean = returns.mean().item()
@@ -334,6 +342,7 @@ class PPOAgent:
         # Normalize advantages with dynamic clipping
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
+        # AATHIRA : Don't clip advantages. It should be free to learn.
         # Dynamic advantage clipping based on normalized distribution
         adv_std = advantages.std().item()
         adv_clip = max(3.0, adv_std * 2)  # 2-sigma rule, min 3
@@ -369,6 +378,7 @@ class PPOAgent:
         
         # PPO update with mini-batches
         total_samples = len(states)
+        # AATHIRA : Shuffle indices under each k_epochs.
         indices = torch.randperm(total_samples)
         
         policy_losses = []
@@ -485,10 +495,12 @@ class PPOAgent:
                     
                     # PPO theory: ratios should be close to 1.0, so log_ratio should be close to 0
                     # Clip to reasonable range: exp(±2) ≈ [0.135, 7.39], which is reasonable for PPO
+                    # AATHIRA : Don't clip log_ratio. It should be free to learn.
                     log_ratio = torch.clamp(log_ratio, min=-2.0, max=2.0)
                     ratios = torch.exp(log_ratio)
                     
                     # Additional safety: clip ratios themselves
+                    # AATHIRA : Don't clip ratios. It should be free to learn.
                     ratios = torch.clamp(ratios, min=0.1, max=10.0)
                     
                     # Compute surrogate losses
@@ -692,6 +704,7 @@ class PPOAgent:
             print(f"  values shape: {values.shape}")
             print(f"  dones shape: {dones.shape}")
         
+        # AATHIRA : Calculate the next value for the last next_state.
         # Compute next values (append 0 for terminal states)
         next_values = torch.cat([values[1:], torch.zeros(1).to(self.device)])
         
