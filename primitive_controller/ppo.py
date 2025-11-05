@@ -105,15 +105,14 @@ class ActorCritic(nn.Module):
         self.critic = nn.Linear(hidden_dim, 1)
         
         # Initialize weights
-        self._init_weights()
+        self.apply(self._init_weights)
     
-    def _init_weights(self):
+    def _init_weights(self, module):
         """Initialize network weights using Xavier initialization with smaller scale."""
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                # Use smaller initialization scale to prevent gradient explosion
-                nn.init.xavier_uniform_(m.weight, gain=0.5)
-                nn.init.constant_(m.bias, 0)
+        if isinstance(module, nn.Linear):
+            # Use smaller initialization scale to prevent gradient explosion
+            nn.init.xavier_uniform_(module.weight, gain=0.5)
+            nn.init.constant_(module.bias, 0)
     
     def forward(self, state):
         """Forward pass through the network."""
@@ -143,7 +142,7 @@ class ActorCritic(nn.Module):
         
         return action_mean, action_std, value
     
-    def get_action(self, state, deterministic=False):
+    def get_action(self, state, action=None, deterministic=False):
         """Sample action from the policy."""
         action_mean, action_std, value = self.forward(state)
         
@@ -151,10 +150,12 @@ class ActorCritic(nn.Module):
             return action_mean, value
         
         dist = Normal(action_mean, action_std)
-        action = dist.sample()
+        if action is None:
+            action = dist.sample()
         log_prob = dist.log_prob(action).sum(dim=-1, keepdim=True)
+        entropy = dist.entropy().sum(dim=-1, keepdim=True)
         
-        return action, log_prob, value
+        return action, log_prob, value, entropy
     
     def evaluate(self, state, action):
         """Evaluate action given state for PPO updates."""
@@ -163,6 +164,7 @@ class ActorCritic(nn.Module):
         dist = Normal(action_mean, action_std)
         log_prob = dist.log_prob(action).sum(dim=-1, keepdim=True)
         entropy = dist.entropy().sum(dim=-1, keepdim=True)
+        
         
         return log_prob, value, entropy
 
@@ -212,7 +214,7 @@ class PPOAgent:
         self.policy = ActorCritic(state_dim, action_dim).to(device)
         safe_lr = min(lr, 1e-4)  # Cap learning rate at 1e-4
         # AATHIRA : Use eps=1e-5 for Adam optimizer to reduce gradient variance..
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=safe_lr, eps=1e-5, weight_decay=1e-5)
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=safe_lr) #eps=1e-5, weight_decay=1e-5
         if safe_lr != lr:
             print(f"Warning: Learning rate reduced from {lr} to {safe_lr} to prevent instability")
         
@@ -276,7 +278,7 @@ class PPOAgent:
                 action, value = self.policy.get_action(state, deterministic=True)
                 return action.cpu().numpy().flatten(), None, value.cpu().numpy().item()
             else:
-                action, log_prob, value = self.policy.get_action(state, deterministic=False)
+                action, log_prob, value, _ = self.policy.get_action(state, deterministic=False)
                 return action.cpu().numpy().flatten(), log_prob.cpu().numpy().item(), value.cpu().numpy().item()
     
     def store_transition(self, state, action, reward, next_state, done, log_prob, value):
@@ -312,7 +314,7 @@ class PPOAgent:
         # print(f"old_log_probs shape: {old_log_probs.shape}")
         # print(f"old_values shape: {old_values.shape}")
         # Compute advantages and returns
-        advantages, returns = self.compute_gae(rewards, old_values, dones)
+        advantages, returns = self.compute_gae(rewards, old_values, dones, next_states)
         
         # Analyze data ranges for better clipping
         print(f"Data Analysis - Rewards: [{rewards.min().item():.3f}, {rewards.max().item():.3f}] (mean: {rewards.mean().item():.3f})")
@@ -403,8 +405,8 @@ class PPOAgent:
                     from torch.cuda.amp import autocast
                     with autocast():
                         # Get current policy outputs
-                        log_probs, values, entropy = self.policy.evaluate(batch_states, batch_actions)
-                        
+                        #log_probs, values, entropy = self.policy.evaluate(batch_states, batch_actions)
+                        _, log_probs, values, entropy = self.policy.get_action(batch_states, batch_actions,deterministic=False)
                         # Compute ratios with PPO-appropriate clipping
                         log_ratio = log_probs - batch_old_log_probs
                         
@@ -412,6 +414,7 @@ class PPOAgent:
                         # Clip to reasonable range: exp(±2) ≈ [0.135, 7.39], which is reasonable for PPO
                         # log_ratio = torch.clamp(log_ratio, min=-2.0, max=2.0)
                         ratios = torch.exp(log_ratio)
+                        
                         
                         # Additional safety: clip ratios themselves
                         # ratios = torch.clamp(ratios, min=0.1, max=10.0)
@@ -489,17 +492,27 @@ class PPOAgent:
                     self.scaler.update()
                 else:
                     # Get current policy outputs
-                    log_probs, values, entropy = self.policy.evaluate(batch_states, batch_actions)
-                    
+                    # log_probs, values, entropy = self.policy.evaluate(batch_states, batch_actions)
+                    _, log_probs, values, entropy = self.policy.get_action(batch_states, batch_actions,deterministic=False)
                     # Compute ratios with PPO-appropriate clipping
+                    log_probs = log_probs.squeeze(1) if log_probs.shape[1] == 1 else log_probs
                     log_ratio = log_probs - batch_old_log_probs
+                    
+                    # Diagnostic prints for first update
+                    # if len(policy_losses) == 0 and start_idx == 0:
+                    #     print(f"\n=== FIRST UPDATE DIAGNOSTICS ===")
+                    #     print(f"log_probs shape: {log_probs.shape}, old_log_probs shape: {batch_old_log_probs.shape}")
+                    #     print(f"log_probs range: [{log_probs.min().item():.4f}, {log_probs.max().item():.4f}]")
+                    #     print(f"old_log_probs range: [{batch_old_log_probs.min().item():.4f}, {batch_old_log_probs.max().item():.4f}]")
+                    #     print(f"log_ratio range: [{log_ratio.min().item():.4f}, {log_ratio.max().item():.4f}]")
+                    #     print(f"================================\n")
                     
                     # PPO theory: ratios should be close to 1.0, so log_ratio should be close to 0
                     # Clip to reasonable range: exp(±2) ≈ [0.135, 7.39], which is reasonable for PPO
                     # DONE AATHIRA : Don't clip log_ratio. It should be free to learn.
                     # log_ratio = torch.clamp(log_ratio, min=-2.0, max=2.0)
                     ratios = torch.exp(log_ratio)
-                    
+                    # print(f"ratios: {ratios.min().item():.4f}, {ratios.max().item():.4f}")
                     # Additional safety: clip ratios themselves
                     # DONE AATHIRA : Don't clip ratios. It should be free to learn.
                     # ratios = torch.clamp(ratios, min=0.1, max=10.0)
@@ -510,6 +523,11 @@ class PPOAgent:
                     policy_loss = -torch.min(surr1, surr2).mean()
                     
                     # Value loss
+                    # print(f"values: {values.min().item():.4f}, {values.max().item():.4f}")
+                    # print(f"batch_returns: {batch_returns.min().item():.4f}, {batch_returns.max().item():.4f}")
+                    # print(f"value shape: {values.shape}, batch_returns shape: {batch_returns.shape}")
+                    values = values.squeeze(1) if values.shape[1] == 1 else values
+                    batch_returns = batch_returns.squeeze(1) if batch_returns.shape[1] == 1 else batch_returns
                     value_loss = F.mse_loss(values, batch_returns)
                     
                     # DONE AATHIRA : Don't cap entropy. It should be free to learn.
@@ -527,24 +545,24 @@ class PPOAgent:
                     total_loss = policy_loss + self.value_coef * value_loss + self.entropy_coef * entropy_loss
                     
                     # Check for loss explosion
-                    if torch.isnan(total_loss) or torch.isinf(total_loss) or total_loss.item() > 1e6:
-                        print(f"Warning: Loss explosion detected! Policy: {policy_loss.item():.2e}, Value: {value_loss.item():.2e}, Total: {total_loss.item():.2e}")
-                        self.nan_count += 1
-                        if self.nan_count >= self.max_nan_count:
-                            print("Too many loss explosions, resetting model weights")
-                            self._reset_model_weights()
-                            self.nan_count = 0
-                        continue
-                    elif torch.isnan(total_loss):
-                        print("Warning: NaN detected in total_loss, skipping update")
-                        self.nan_count += 1
-                        if self.nan_count >= self.max_nan_count:
-                            print("Too many NaN occurrences, resetting model weights")
-                            self._reset_model_weights()
-                            self.nan_count = 0
-                        continue
-                    else:
-                        self.nan_count = 0  # Reset counter on successful update
+                    # if torch.isnan(total_loss) or torch.isinf(total_loss) or total_loss.item() > 1e6:
+                    #     print(f"Warning: Loss explosion detected! Policy: {policy_loss.item():.2e}, Value: {value_loss.item():.2e}, Total: {total_loss.item():.2e}")
+                    #     self.nan_count += 1
+                    #     if self.nan_count >= self.max_nan_count:
+                    #         print("Too many loss explosions, resetting model weights")
+                    #         self._reset_model_weights()
+                    #         self.nan_count = 0
+                    #     continue
+                    # elif torch.isnan(total_loss):
+                    #     print("Warning: NaN detected in total_loss, skipping update")
+                    #     self.nan_count += 1
+                    #     if self.nan_count >= self.max_nan_count:
+                    #         print("Too many NaN occurrences, resetting model weights")
+                    #         self._reset_model_weights()
+                    #         self.nan_count = 0
+                    #     continue
+                    # else:
+                    #     self.nan_count = 0  # Reset counter on successful update
                     
                     # Update
                     self.optimizer.zero_grad()
@@ -679,7 +697,7 @@ class PPOAgent:
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()
     
-    def compute_gae(self, rewards, values, dones, lam=0.95):
+    def compute_gae(self, rewards, values, dones, next_states=None, lam=0.95):
         """
         Compute Generalized Advantage Estimation (GAE).
         
@@ -687,6 +705,7 @@ class PPOAgent:
             rewards: Rewards tensor
             values: Value estimates tensor
             dones: Done flags tensor
+            next_states: Next states tensor (optional, used to get value for last next_state)
             lam: GAE lambda parameter
             
         Returns:
@@ -706,8 +725,18 @@ class PPOAgent:
             print(f"  dones shape: {dones.shape}")
         
         # AATHIRA : Calculate the next value for the last next_state.
-        # Compute next values (append 0 for terminal states)
-        next_values = torch.cat([values[1:], torch.zeros(1).to(self.device)])
+        # Compute next values - get value from policy network for last next_state
+        if next_states is not None and len(next_states) > 0:
+            # Get value for the last next_state from the policy network
+            with torch.no_grad():
+                _, _, last_next_value = self.policy.forward(next_states[-1:])
+                # Convert from [1, 1] to scalar, then to 1D tensor [1] on same device as values
+                last_next_value = last_next_value.squeeze().unsqueeze(0).to(values.device)
+        else:
+            # Fallback to 0 if next_states not provided
+            last_next_value = torch.zeros(1, device=values.device)
+        
+        next_values = torch.cat([values[1:], last_next_value])
         
         # Compute TD errors
         td_errors = rewards + self.gamma * next_values * (~dones).float() - values
