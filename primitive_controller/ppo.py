@@ -178,7 +178,7 @@ class PPOAgent:
                  eps_clip=0.2, k_epochs=10, entropy_coef=0.01, 
                  value_coef=0.5, max_grad_norm=0.5, device='cpu', 
                  use_mixed_precision=False, batch_size=64, 
-                 high_reward_threshold=1.5):
+                 high_reward_threshold=1.5, clip_vloss=True, value_clip_coef=0.2, value_loss_mode='min'):
         """
         Initialize PPO agent.
         
@@ -195,6 +195,10 @@ class PPOAgent:
             device: Device to run on ('cpu' or 'cuda')
             use_mixed_precision: Whether to use mixed precision training (GPU only)
             batch_size: Batch size for training
+            high_reward_threshold: Reward threshold for high-reward experience prioritization
+            clip_vloss: Whether to use clipped value loss (prevents value function from updating too drastically)
+            value_clip_coef: Clipping coefficient for value loss (similar to eps_clip for policy)
+            value_loss_mode: How to combine clipped/unclipped losses ('max'=conservative, 'min'=prefer clipping, 'mean'=average)
         """
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -209,6 +213,9 @@ class PPOAgent:
         self.use_mixed_precision = use_mixed_precision and device.type == 'cuda'
         self.batch_size = batch_size
         self.high_reward_threshold = high_reward_threshold
+        self.clip_vloss = clip_vloss
+        self.value_clip_coef = value_clip_coef
+        self.value_loss_mode = value_loss_mode  # 'max', 'min', or 'mean'
         
         # Initialize networks
         self.policy = ActorCritic(state_dim, action_dim).to(device)
@@ -431,8 +438,37 @@ class PPOAgent:
                         #     print(f"Debug - Advantages range: [{batch_advantages.min().item():.4f}, {batch_advantages.max().item():.4f}]")
                         #     print(f"Debug - Policy loss: {policy_loss.item():.4f}")
                         
-                        # Value loss with clipping
-                        value_loss = F.mse_loss(values, batch_returns)
+                        # Value loss with optional clipping (PPO-style)
+                        # Ensure shapes are compatible
+                        newvalue = values.squeeze(1) if values.dim() > 1 and values.shape[1] == 1 else values
+                        b_returns = batch_returns.squeeze(1) if batch_returns.dim() > 1 and batch_returns.shape[1] == 1 else batch_returns
+                        b_values = old_values[batch_indices].squeeze(1) if old_values[batch_indices].dim() > 1 and old_values[batch_indices].shape[1] == 1 else old_values[batch_indices]
+                        
+                        if self.clip_vloss:
+                            v_loss_unclipped = (newvalue - b_returns) ** 2
+                            v_clipped = b_values + torch.clamp(
+                                newvalue - b_values,
+                                -self.value_clip_coef,
+                                self.value_clip_coef,
+                            )
+                            v_loss_clipped = (v_clipped - b_returns) ** 2
+                            
+                            # Combine clipped and unclipped losses based on mode:
+                            # 'max': Conservative - use larger loss (prevents aggressive updates)
+                            # 'min': Prefer clipping - use smaller loss (benefits from clipping)
+                            # 'mean': Average both (balanced approach)
+                            if self.value_loss_mode == 'max':
+                                v_loss_combined = torch.max(v_loss_unclipped, v_loss_clipped)
+                            elif self.value_loss_mode == 'min':
+                                v_loss_combined = torch.min(v_loss_unclipped, v_loss_clipped)
+                            elif self.value_loss_mode == 'mean':
+                                v_loss_combined = (v_loss_unclipped + v_loss_clipped) / 2.0
+                            else:
+                                raise ValueError(f"Unknown value_loss_mode: {self.value_loss_mode}. Use 'max', 'min', or 'mean'")
+                            
+                            value_loss = 0.5 * v_loss_combined.mean()
+                        else:
+                            value_loss = 0.5 * ((newvalue - b_returns) ** 2).mean()
                         
                         # DONE AATHIRA : Don't cap entropy. It should be free to learn.
                         # batch_entropy_mean = entropy.mean().detach().item()
@@ -523,12 +559,37 @@ class PPOAgent:
                     policy_loss = -torch.min(surr1, surr2).mean()
                     
                     # Value loss
-                    # print(f"values: {values.min().item():.4f}, {values.max().item():.4f}")
-                    # print(f"batch_returns: {batch_returns.min().item():.4f}, {batch_returns.max().item():.4f}")
-                    # print(f"value shape: {values.shape}, batch_returns shape: {batch_returns.shape}")
-                    values = values.squeeze(1) if values.shape[1] == 1 else values
-                    batch_returns = batch_returns.squeeze(1) if batch_returns.shape[1] == 1 else batch_returns
-                    value_loss = F.mse_loss(values, batch_returns)
+                    # Value loss with optional clipping (PPO-style)
+                    # Ensure shapes are compatible
+                    newvalue = values.squeeze(1) if values.dim() > 1 and values.shape[1] == 1 else values
+                    b_returns = batch_returns.squeeze(1) if batch_returns.dim() > 1 and batch_returns.shape[1] == 1 else batch_returns
+                    b_values = old_values[batch_indices].squeeze(1) if old_values[batch_indices].dim() > 1 and old_values[batch_indices].shape[1] == 1 else old_values[batch_indices]
+                    
+                    if self.clip_vloss:
+                        v_loss_unclipped = (newvalue - b_returns) ** 2
+                        v_clipped = b_values + torch.clamp(
+                            newvalue - b_values,
+                            -self.value_clip_coef,
+                            self.value_clip_coef,
+                        )
+                        v_loss_clipped = (v_clipped - b_returns) ** 2
+                        
+                        # Combine clipped and unclipped losses based on mode:
+                        # 'max': Conservative - use larger loss (prevents aggressive updates)
+                        # 'min': Prefer clipping - use smaller loss (benefits from clipping)
+                        # 'mean': Average both (balanced approach)
+                        if self.value_loss_mode == 'max':
+                            v_loss_combined = torch.max(v_loss_unclipped, v_loss_clipped)
+                        elif self.value_loss_mode == 'min':
+                            v_loss_combined = torch.min(v_loss_unclipped, v_loss_clipped)
+                        elif self.value_loss_mode == 'mean':
+                            v_loss_combined = (v_loss_unclipped + v_loss_clipped) / 2.0
+                        else:
+                            raise ValueError(f"Unknown value_loss_mode: {self.value_loss_mode}. Use 'max', 'min', or 'mean'")
+                        
+                        value_loss = 0.5 * v_loss_combined.mean()
+                    else:
+                        value_loss = 0.5 * ((newvalue - b_returns) ** 2).mean()
                     
                     # DONE AATHIRA : Don't cap entropy. It should be free to learn.
                     # batch_entropy_mean = entropy.mean().detach().item()
@@ -1000,6 +1061,10 @@ if __name__ == "__main__":
     parser.add_argument('--entropy_coef', type=float, default=0.01, help='Entropy coefficient')
     parser.add_argument('--value_coef', type=float, default=0.5, help='Value loss coefficient')
     parser.add_argument('--max_grad_norm', type=float, default=0.5, help='Max grad norm')
+    parser.add_argument('--no-clip-vloss', '--no_clip_vloss', action='store_false', dest='clip_vloss', help='Disable clipped value loss (default: clip_vloss=True)')
+    parser.add_argument('--value_clip_coef', type=float, default=0.2, help='Value clipping coefficient (similar to eps_clip)')
+    parser.add_argument('--value_loss_mode', type=str, default='min', choices=['max', 'min', 'mean'], 
+                        help='How to combine clipped/unclipped value losses: max=conservative, min=prefer clipping (default), mean=average')
     parser.add_argument('--device', type=str, default='auto', help='Device (auto, cpu, cuda, cuda:0, etc.)')
     parser.add_argument('--gpu_id', type=int, default=0, help='GPU ID to use (if multiple GPUs available)')
     parser.add_argument('--use_mixed_precision', action='store_true', help='Use mixed precision training (GPU only)')
@@ -1014,6 +1079,10 @@ if __name__ == "__main__":
     parser.add_argument('--run_name', type=str, default=None, help='wandb run name')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     args = parser.parse_args()
+    
+    # Set default for clip_vloss if not provided (defaults to True)
+    if not hasattr(args, 'clip_vloss') or args.clip_vloss is None:
+        args.clip_vloss = True
 
     # Determine device
     device = get_device(args.device, args.gpu_id)
@@ -1073,6 +1142,9 @@ if __name__ == "__main__":
         use_mixed_precision=args.use_mixed_precision,
         batch_size=args.batch_size,
         high_reward_threshold=args.high_reward_threshold,
+        clip_vloss=args.clip_vloss,
+        value_clip_coef=args.value_clip_coef,
+        value_loss_mode=args.value_loss_mode,
     )
 
     # Train
