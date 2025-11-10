@@ -225,6 +225,17 @@ class PPOAgent:
         if safe_lr != lr:
             print(f"Warning: Learning rate reduced from {lr} to {safe_lr} to prevent instability")
         
+        # Dynamic learning rate configuration
+        self.initial_lr = safe_lr
+        self.current_lr = safe_lr
+        self.max_lr = max(lr, safe_lr)
+        self.min_lr = max(1e-6, safe_lr * 0.1)
+        self.target_policy_shift = 0.01  # Desired average policy shift (approximate KL)
+        self.policy_shift_tolerance = 0.005  # Allowable deviation from target before adjustment
+        self.lr_increase_factor = 1.1
+        self.lr_decrease_factor = 1.1
+        self.policy_shift_history = deque(maxlen=50)
+        
         # Initialize mixed precision scaler if using GPU
         if self.use_mixed_precision:
             from torch.cuda.amp import GradScaler
@@ -256,7 +267,9 @@ class PPOAgent:
             'entropy_loss': [],
             'total_loss': [],
             'episode_rewards': [],
-            'episode_lengths': []
+            'episode_lengths': [],
+            'policy_shift': [],
+            'learning_rate': []
         }
     
     def select_action(self, state, deterministic=False):
@@ -386,8 +399,7 @@ class PPOAgent:
         
         # PPO update with mini-batches
         total_samples = len(states)
-        
-        
+        kl_values = []
         
         policy_losses = []
         value_losses = []
@@ -414,6 +426,8 @@ class PPOAgent:
                         # Get current policy outputs
                         #log_probs, values, entropy = self.policy.evaluate(batch_states, batch_actions)
                         _, log_probs, values, entropy = self.policy.get_action(batch_states, batch_actions,deterministic=False)
+                        log_probs = log_probs.squeeze(1) if log_probs.dim() > 1 and log_probs.shape[1] == 1 else log_probs
+                        batch_old_log_probs = batch_old_log_probs.squeeze(1) if batch_old_log_probs.dim() > 1 and batch_old_log_probs.shape[1] == 1 else batch_old_log_probs
                         # Compute ratios with PPO-appropriate clipping
                         log_ratio = log_probs - batch_old_log_probs
                         
@@ -422,6 +436,8 @@ class PPOAgent:
                         # log_ratio = torch.clamp(log_ratio, min=-2.0, max=2.0)
                         ratios = torch.exp(log_ratio)
                         
+                        approx_kl = torch.abs(batch_old_log_probs - log_probs).mean()
+                        kl_values.append(approx_kl.detach().cpu().item())
                         
                         # Additional safety: clip ratios themselves
                         # ratios = torch.clamp(ratios, min=0.1, max=10.0)
@@ -530,8 +546,9 @@ class PPOAgent:
                     # Get current policy outputs
                     # log_probs, values, entropy = self.policy.evaluate(batch_states, batch_actions)
                     _, log_probs, values, entropy = self.policy.get_action(batch_states, batch_actions,deterministic=False)
+                    log_probs = log_probs.squeeze(1) if log_probs.dim() > 1 and log_probs.shape[1] == 1 else log_probs
+                    batch_old_log_probs = batch_old_log_probs.squeeze(1) if batch_old_log_probs.dim() > 1 and batch_old_log_probs.shape[1] == 1 else batch_old_log_probs
                     # Compute ratios with PPO-appropriate clipping
-                    log_probs = log_probs.squeeze(1) if log_probs.shape[1] == 1 else log_probs
                     log_ratio = log_probs - batch_old_log_probs
                     
                     # Diagnostic prints for first update
@@ -552,6 +569,9 @@ class PPOAgent:
                     # Additional safety: clip ratios themselves
                     # DONE AATHIRA : Don't clip ratios. It should be free to learn.
                     # ratios = torch.clamp(ratios, min=0.1, max=10.0)
+                    
+                    approx_kl = torch.abs(batch_old_log_probs - log_probs).mean()
+                    kl_values.append(approx_kl.detach().cpu().item())
                     
                     # Compute surrogate losses
                     surr1 = ratios * batch_advantages
@@ -751,6 +771,22 @@ class PPOAgent:
             total_loss_avg = np.mean(policy_losses) + self.value_coef * np.mean(value_losses) + self.entropy_coef * np.mean(entropy_losses)
             self.training_stats['total_loss'].append(total_loss_avg)
         
+        if kl_values:
+            mean_policy_shift = float(np.mean(kl_values))
+            self.training_stats['policy_shift'].append(mean_policy_shift)
+            self._adjust_learning_rate(mean_policy_shift)
+        else:
+            mean_policy_shift = None
+            self.training_stats['policy_shift'].append(float('nan'))
+        
+        if mean_policy_shift is not None:
+            self.training_stats['learning_rate'].append(self.current_lr)
+        elif self.training_stats['learning_rate']:
+            # Repeat last learning rate to keep stats aligned
+            self.training_stats['learning_rate'].append(self.training_stats['learning_rate'][-1])
+        else:
+            self.training_stats['learning_rate'].append(self.current_lr)
+        
         # Clear memory
         self.memory.clear()
         
@@ -817,6 +853,43 @@ class PPOAgent:
         
         return advantages, returns
     
+    def _adjust_learning_rate(self, mean_policy_shift):
+        """
+        Dynamically adjust the learning rate based on how much the policy
+        has shifted from the behaviour policy that generated the data.
+        
+        Args:
+            mean_policy_shift (float): Average absolute difference between
+                old and new log probabilities (approximate policy shift).
+        """
+        if np.isnan(mean_policy_shift) or np.isinf(mean_policy_shift):
+            return
+        
+        self.policy_shift_history.append(mean_policy_shift)
+        smoothed_shift = float(np.mean(self.policy_shift_history))
+        
+        upper_bound = self.target_policy_shift + self.policy_shift_tolerance
+        lower_bound = max(0.0, self.target_policy_shift - self.policy_shift_tolerance)
+        
+        previous_lr = self.current_lr
+        if smoothed_shift > upper_bound and self.current_lr > self.min_lr:
+            self.current_lr = max(self.min_lr, self.current_lr / self.lr_decrease_factor)
+        elif smoothed_shift < lower_bound and self.current_lr < self.max_lr:
+            self.current_lr = min(self.max_lr, self.current_lr * self.lr_increase_factor)
+        
+        if self.current_lr != previous_lr:
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = self.current_lr
+            print(
+                f"Adjusted learning rate from {previous_lr:.6e} to {self.current_lr:.6e} "
+                f"(smoothed policy shift: {smoothed_shift:.6f})"
+            )
+        else:
+            # Ensure optimizer param groups stay in sync even if unchanged
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = self.current_lr
+    
+    
     def save_model(self, filepath):
         """Save the trained model."""
         torch.save({
@@ -861,7 +934,13 @@ class PPOAgent:
         # Reinitialize the policy network
         self.policy.apply(self.policy._init_weights)
         # Reset optimizer state
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=min(self.lr, 1e-4))
+        reset_lr = min(self.lr, 1e-4)
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=reset_lr)
+        self.max_lr = max(self.lr, reset_lr)
+        self.min_lr = max(1e-6, reset_lr * 0.1)
+        self.current_lr = reset_lr
+        self.initial_lr = reset_lr
+        self.policy_shift_history.clear()
         # Clear memory to start fresh
         self.memory.clear()
         print("Model weights reset successfully")
