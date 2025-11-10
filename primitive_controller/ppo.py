@@ -1153,6 +1153,11 @@ if __name__ == "__main__":
     parser.add_argument('--save_best_only', action='store_true', help='Save only the best model (overwrites previous best)')
     parser.add_argument('--enable_viewer', action='store_true', help='Enable MuJoCo viewer')
     parser.add_argument('--visualize_collision_boxes', action='store_true', help='Visualize collision boxes')
+    parser.add_argument('--enable_gravity', dest='enable_gravity', action='store_true',
+                        help='Override environment gravity with default vector [0, 0, -9.81]')
+    parser.add_argument('--disable_gravity', dest='enable_gravity', action='store_false',
+                        help='Disable gravity override and use gravity from XML')
+    parser.set_defaults(enable_gravity=False)
     parser.add_argument('--high_reward_threshold', type=float, default=1.5, help='Reward threshold for high-reward experience prioritization')
     parser.add_argument('--project', type=str, default='mujoco-rubiks-ppo', help='wandb project name')
     parser.add_argument('--run_name', type=str, default=None, help='wandb run name')
@@ -1195,6 +1200,7 @@ if __name__ == "__main__":
             'max_grad_norm': args.max_grad_norm,
             'device': str(device),
             'seed': args.seed,
+            'gravity_override': args.enable_gravity,
         })
 
     # Create environment
@@ -1202,6 +1208,7 @@ if __name__ == "__main__":
         xml_path=args.xml,
         enable_viewer=args.enable_viewer,
         visualize_collision_boxes=args.visualize_collision_boxes,
+        enable_gravity=args.enable_gravity,
     )
 
     # Instantiate agent

@@ -29,7 +29,8 @@ class RubiksCubeEnvironment:
     def __init__(self, xml_path="xmls/bidexhands.xml", timestep=0.002, 
                  max_episode_steps=1000, enable_viewer=False, 
                  visualize_collision_boxes=False, workspace_radius=0.8,
-                 settle_on_reset=False):
+                 settle_on_reset=False, enable_gravity=False,
+                 gravity_vector=None):
         """
         Initialize the Rubik's Cube environment.
         
@@ -39,6 +40,8 @@ class RubiksCubeEnvironment:
             max_episode_steps: Maximum steps per episode
             enable_viewer: Whether to enable visual rendering
             visualize_collision_boxes: Whether to visualize collision boxes and object axes
+            enable_gravity: Whether to override the model gravity during initialization
+            gravity_vector: Gravity vector to apply when enable_gravity is True
         """
         self.xml_path = xml_path
         self.timestep = timestep
@@ -47,6 +50,14 @@ class RubiksCubeEnvironment:
         self.visualize_collision_boxes = visualize_collision_boxes
         self.workspace_radius = workspace_radius
         self.settle_on_reset = settle_on_reset
+        self.enable_gravity = enable_gravity
+        if gravity_vector is None:
+            self.gravity_vector = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+        else:
+            gravity_array = np.array(gravity_vector, dtype=np.float64)
+            if gravity_array.shape != (3,):
+                raise ValueError("gravity_vector must be an iterable with three elements (x, y, z).")
+            self.gravity_vector = gravity_array
         
         # Load MuJoCo model and data
         self.model = mj.MjModel.from_xml_path(xml_path)
@@ -54,6 +65,7 @@ class RubiksCubeEnvironment:
         
         # Set timestep
         self.model.opt.timestep = timestep
+        self._apply_gravity_override()
         
         # Initialize viewer if enabled
         self.viewer = None
@@ -160,6 +172,7 @@ class RubiksCubeEnvironment:
         """
         # Reset MuJoCo simulation
         mj.mj_resetData(self.model, self.data)
+        self._apply_gravity_override()
         
         # Set initial joint positions (neutral pose)
         
@@ -234,14 +247,21 @@ class RubiksCubeEnvironment:
         """Set initial cube position between the hands at finger level."""
         # Find cube body ID
         cube_body_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, "core")
+        target_position = np.array([0.35, 0.0, 0.25], dtype=np.float64)
         if cube_body_id != -1:
-            # Position cube between hands at finger level:
-            # - X: 0.15 (forward from hands, in line with finger tips)
-            # - Y: 0.0 (centered between hands at Y=±0.2)
-            # - Z: 0.25 (same height as hands)
-            # The hands are at X=0, so moving forward to X=0.15 puts the cube
-            # in the natural grasping zone where fingers can reach it
-            self.model.body_pos[cube_body_id] = [0.35, 0.0, 0.25]
+            cube_joint_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_JOINT, "cube_free")
+            if cube_joint_id != -1:
+                # For a free joint, qpos stores [x, y, z, quat_w, quat_x, quat_y, quat_z]
+                qpos_adr = self.model.jnt_qposadr[cube_joint_id]
+                self.data.qpos[qpos_adr:qpos_adr + 7] = np.concatenate(
+                    [target_position, np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)]
+                )
+                # Reset joint velocity to zero to avoid residual motion
+                qvel_adr = self.model.jnt_dofadr[cube_joint_id]
+                self.data.qvel[qvel_adr:qvel_adr + 6] = 0.0
+            else:
+                # Fallback for legacy models without named free joint
+                self.model.body_pos[cube_body_id] = target_position
             
             # Forward kinematics to update world positions
             mj.mj_forward(self.model, self.data)
@@ -291,6 +311,14 @@ class RubiksCubeEnvironment:
         ])
         
         return state.astype(np.float32)
+    
+    def _apply_gravity_override(self):
+        """Override the environment gravity if requested."""
+        if not self.enable_gravity:
+            return
+        self.model.opt.gravity[:] = self.gravity_vector
+        # Update forward dynamics to account for gravity change
+        mj.mj_forward(self.model, self.data)
     
     # Aathira : Explain this function?
     def _get_contact_forces(self) -> np.ndarray:

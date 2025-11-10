@@ -123,8 +123,18 @@ class InteractiveRewardViewer:
     def _set_initial_cube_pose(self):
         """Set initial cube position between the hands."""
         cube_body_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, "core")
+        target_position = np.array([0.35, 0.0, 0.25], dtype=np.float64)
         if cube_body_id != -1:
-            self.model.body_pos[cube_body_id] = [0.35, 0.0, 0.25]
+            cube_joint_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_JOINT, "cube_free")
+            if cube_joint_id != -1:
+                qpos_adr = self.model.jnt_qposadr[cube_joint_id]
+                self.data.qpos[qpos_adr:qpos_adr + 7] = np.concatenate(
+                    [target_position, np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)]
+                )
+                qvel_adr = self.model.jnt_dofadr[cube_joint_id]
+                self.data.qvel[qvel_adr:qvel_adr + 6] = 0.0
+            else:
+                self.model.body_pos[cube_body_id] = target_position
             mj.mj_forward(self.model, self.data)
     
     def _get_initial_cube_config(self) -> Dict:
