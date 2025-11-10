@@ -140,6 +140,7 @@ class InteractiveRewardViewerGUI:
                 self.data.qvel[qvel_adr:qvel_adr + 6] = 0.0
             else:
                 self.model.body_pos[cube_body_id] = target_position
+            # self.model.opt.gravity[:] = [0.0, 0.0, 0.0]
             mj.mj_forward(self.model, self.data)
     
     def _get_initial_cube_config(self) -> Dict:
