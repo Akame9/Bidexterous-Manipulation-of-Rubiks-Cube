@@ -229,7 +229,11 @@ class PPOAgent:
         self.initial_lr = safe_lr
         self.current_lr = safe_lr
         self.max_lr = max(lr, safe_lr)
-        self.min_lr = max(1e-6, safe_lr * 0.1)
+        # Set minimum learning rate to prevent learning from stopping
+        # 1e-6 is about the lowest practical learning rate for neural networks
+        # Going lower (e.g., 1e-8) causes updates to be too small, making entropy constant
+        # When LR is too small, gradient updates become negligible, so policy (and entropy) don't change
+        self.min_lr = 1e-5
         self.target_policy_shift = 0.01  # Desired average policy shift (approximate KL)
         self.policy_shift_tolerance = 0.005  # Allowable deviation from target before adjustment
         self.lr_increase_factor = 1.1
@@ -868,8 +872,8 @@ class PPOAgent:
         self.policy_shift_history.append(mean_policy_shift)
         smoothed_shift = float(np.mean(self.policy_shift_history))
         
-        upper_bound = self.target_policy_shift + self.policy_shift_tolerance
-        lower_bound = max(0.0, self.target_policy_shift - self.policy_shift_tolerance)
+        upper_bound = self.target_policy_shift + self.policy_shift_tolerance  #0.015
+        lower_bound = max(0.0, self.target_policy_shift - self.policy_shift_tolerance) #0.005
         
         previous_lr = self.current_lr
         if smoothed_shift > upper_bound and self.current_lr > self.min_lr:
@@ -937,7 +941,9 @@ class PPOAgent:
         reset_lr = min(self.lr, 1e-4)
         self.optimizer = optim.Adam(self.policy.parameters(), lr=reset_lr)
         self.max_lr = max(self.lr, reset_lr)
-        self.min_lr = max(1e-6, reset_lr * 0.1)
+        # Set minimum learning rate to prevent learning from stopping
+        # 1e-6 is about the lowest practical learning rate for neural networks
+        self.min_lr = 1e-5
         self.current_lr = reset_lr
         self.initial_lr = reset_lr
         self.policy_shift_history.clear()
@@ -1027,7 +1033,8 @@ class PPOMemory:
 
 
 def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500, 
-                   save_interval=100, model_path="ppo_model.pth", save_best_only=False):
+                   save_interval=100, model_path="ppo_model.pth", save_best_only=False,
+                   episodes_per_update=4, min_buffer_size=200):
     """
     Train PPO agent on the environment.
     
@@ -1039,6 +1046,8 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
         save_interval: Interval for saving model
         model_path: Path to save model
         save_best_only: If True, only save the best model (overwrites previous best)
+        episodes_per_update: Number of episodes to accumulate before updating (default: 4)
+        min_buffer_size: Minimum number of transitions before updating (default: 200)
     """
     print("Starting PPO training...")
     if _WANDB_AVAILABLE and wandb.run is not None:
@@ -1056,7 +1065,13 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
             'entropy_coef': agent.entropy_coef,
             'value_coef': agent.value_coef,
             'max_grad_norm': agent.max_grad_norm,
+            'episodes_per_update': episodes_per_update,
+            'min_buffer_size': min_buffer_size,
         }, allow_val_change=True)
+    
+    # Accumulate data across multiple episodes to reduce zig-zag pattern
+    episodes_since_update = 0
+    total_steps_collected = 0
     
     for episode in tqdm(range(num_episodes), desc="Training Episodes"):
         state = env.initialize()
@@ -1071,22 +1086,43 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
             # Take step in environment
             next_state, reward, done, info = env.take_step(action)
             
-            # Store transition
+            # Store transition (data accumulates in memory)
             agent.store_transition(state, action, reward, next_state, done, log_prob, value)
             
             state = next_state
             episode_reward += reward
             episode_length += 1
+            total_steps_collected += 1
             
             if done:
                 break
         
-        # Update agent
-        agent.update()
+        episodes_since_update += 1
         
         # Store episode statistics
         agent.training_stats['episode_rewards'].append(episode_reward)
         agent.training_stats['episode_lengths'].append(episode_length)
+        
+        # Update policy only when we have accumulated enough data
+        # This reduces zig-zag pattern by:
+        # 1. Providing larger, more stable batches
+        # 2. Reducing overfitting to single episodes
+        # 3. Better data diversity across episodes
+        should_update = (
+            episodes_since_update >= episodes_per_update and
+            len(agent.memory.states) >= min_buffer_size
+        )
+        
+        if should_update and len(agent.memory.states) >= 32:  # Minimum batch size check
+            # Update agent on accumulated data
+            agent.update()
+            episodes_since_update = 0
+            total_steps_collected = 0
+        elif len(agent.memory.states) >= agent.memory.max_size:
+            # Prevent memory overflow - update even if criteria not met
+            agent.update()
+            episodes_since_update = 0
+            total_steps_collected = 0
 
         # Log to wandb
         if _WANDB_AVAILABLE and wandb.run is not None:
@@ -1109,7 +1145,10 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
             avg_reward = np.mean(agent.training_stats['episode_rewards'][-10:])
             avg_length = np.mean(agent.training_stats['episode_lengths'][-10:])
             high_reward_count = len(agent.memory.high_reward_indices)
-            print(f"Episode {episode}, Avg Reward: {avg_reward:.2f}, Avg Length: {avg_length:.2f}, High-Reward Samples: {high_reward_count}")
+            buffer_size = len(agent.memory.states)
+            print(f"Episode {episode}, Avg Reward: {avg_reward:.2f}, Avg Length: {avg_length:.2f}, "
+                  f"Buffer Size: {buffer_size}, Episodes Since Update: {episodes_since_update}, "
+                  f"High-Reward Samples: {high_reward_count}")
         
         if save_best_only:
                 # Create proper filename: replace .pth with _best.pth
@@ -1123,6 +1162,10 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
                 if _WANDB_AVAILABLE and wandb.run is not None:
                     wandb.save(f"{model_path}_{episode}")
     
+    # Final update on remaining data
+    if len(agent.memory.states) >= 32:
+        print(f"Final update on remaining {len(agent.memory.states)} transitions")
+        agent.update()
     
     print("Training completed!")
 
@@ -1159,6 +1202,8 @@ if __name__ == "__main__":
                         help='Disable gravity override and use gravity from XML')
     parser.set_defaults(enable_gravity=False)
     parser.add_argument('--high_reward_threshold', type=float, default=1.5, help='Reward threshold for high-reward experience prioritization')
+    parser.add_argument('--episodes_per_update', type=int, default=4, help='Number of episodes to accumulate before updating (reduces zig-zag pattern)')
+    parser.add_argument('--min_buffer_size', type=int, default=500, help='Minimum number of transitions before updating (reduces zig-zag pattern)')
     parser.add_argument('--project', type=str, default='mujoco-rubiks-ppo', help='wandb project name')
     parser.add_argument('--run_name', type=str, default=None, help='wandb run name')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
@@ -1243,6 +1288,8 @@ if __name__ == "__main__":
             save_interval=args.save_interval,
             model_path=args.model_path,
             save_best_only=args.save_best_only,
+            episodes_per_update=args.episodes_per_update,
+            min_buffer_size=args.min_buffer_size,
         )
     finally:
         env.close()
