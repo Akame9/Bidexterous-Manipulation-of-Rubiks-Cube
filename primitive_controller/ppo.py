@@ -1135,6 +1135,8 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
             for key in ['policy_loss', 'value_loss', 'entropy_loss', 'total_loss']:
                 if agent.training_stats[key]:
                     log_payload[f'loss/{key}'] = agent.training_stats[key][-1]
+            if agent.training_stats['learning_rate']:
+                log_payload['train/learning_rate'] = agent.training_stats['learning_rate'][-1]
             if len(agent.training_stats['episode_rewards']) >= 10:
                 log_payload['episode/avg_reward_10'] = float(np.mean(agent.training_stats['episode_rewards'][-10:]))
                 log_payload['episode/avg_length_10'] = float(np.mean(agent.training_stats['episode_lengths'][-10:]))
@@ -1196,6 +1198,8 @@ if __name__ == "__main__":
     parser.add_argument('--save_best_only', action='store_true', help='Save only the best model (overwrites previous best)')
     parser.add_argument('--enable_viewer', action='store_true', help='Enable MuJoCo viewer')
     parser.add_argument('--visualize_collision_boxes', action='store_true', help='Visualize collision boxes')
+    parser.add_argument('--rotation_sequence', type=str, nargs='*', default=None,
+                        help='Rotation sequence of face names (e.g., --rotation_sequence blue)')
     parser.add_argument('--enable_gravity', dest='enable_gravity', action='store_true',
                         help='Override environment gravity with default vector [0, 0, -9.81]')
     parser.add_argument('--disable_gravity', dest='enable_gravity', action='store_false',
@@ -1249,11 +1253,15 @@ if __name__ == "__main__":
         })
 
     # Create environment
+    rotation_sequence = args.rotation_sequence if args.rotation_sequence else None
+    if rotation_sequence:
+        print(f"Rotation sequence: {rotation_sequence}")
     env = RubiksCubeEnvironment(
         xml_path=args.xml,
         enable_viewer=args.enable_viewer,
         visualize_collision_boxes=args.visualize_collision_boxes,
         enable_gravity=args.enable_gravity,
+        rotation_sequence=rotation_sequence,
     )
 
     # Instantiate agent

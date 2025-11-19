@@ -30,7 +30,7 @@ class RubiksCubeEnvironment:
                  max_episode_steps=1000, enable_viewer=False, 
                  visualize_collision_boxes=False, workspace_radius=0.8,
                  settle_on_reset=False, enable_gravity=False,
-                 gravity_vector=None):
+                 gravity_vector=None, rotation_sequence=None):
         """
         Initialize the Rubik's Cube environment.
         
@@ -42,6 +42,8 @@ class RubiksCubeEnvironment:
             visualize_collision_boxes: Whether to visualize collision boxes and object axes
             enable_gravity: Whether to override the model gravity during initialization
             gravity_vector: Gravity vector to apply when enable_gravity is True
+            rotation_sequence: List of face names to rotate (e.g., ['red', 'blue', 'white'])
+                              Each face name should be one of: 'red', 'orange', 'blue', 'green', 'white', 'yellow'
         """
         self.xml_path = xml_path
         self.timestep = timestep
@@ -93,13 +95,43 @@ class RubiksCubeEnvironment:
         # Target cube configuration (for reward calculation)
         self.target_cube_config = self._get_initial_cube_config()
         
-        
+        # Rotation sequence tracking
+        self.rotation_sequence = rotation_sequence if rotation_sequence is not None else []
+        self.current_rotation_index = 0  # Index of current face in sequence
+        self.rotation_started = False  # Whether current rotation has started
+        self.rotation_completed = False  # Whether current rotation has completed
+        self.initial_joint_angle = None  # Joint angle when rotation started
+        self.rotation_angle_accumulated = 0.0  # Accumulated rotation angle
+        self.rotation_start_threshold = 0.1  # Angular velocity threshold to detect rotation start (rad/s)
+        self.rotation_complete_threshold = np.pi / 2.0  # 90 degrees for complete rotation
+        # Map face names to joint names (from cube_rad.xml structure)
+        self.face_to_joint_map = {
+            'red': 'pX',      # Red face uses pX joint (positive X axis)
+            'orange': 'nX',   # Orange face uses nX joint (negative X axis)
+            'blue': 'pY',     # Blue face uses pY joint (positive Y axis)
+            'green': 'nY',    # Green face uses nY joint (negative Y axis)
+            'white': 'pZ',    # White face uses pZ joint (positive Z axis)
+            'yellow': 'nZ'    # Yellow face uses nZ joint (negative Z axis)
+        }
+        # Cache joint IDs for faster lookup
+        self.face_joint_ids = {}
+        self._initialize_face_joint_ids()
+        self.rotation_rewards_given = set()  # Track which rotations have been rewarded
         
         print(f"Environment initialized with {self.model.nu} total actuators")
         print(f"Hand actuators: {len(self.hand_actuators)}")
         print(f"Cube actuators: {len(self.cube_actuators)} (excluded from action space)")
         print(f"State dimension: {self.state_dim}")
         print(f"Action dimension: {self.action_dim}")
+    
+    def _initialize_face_joint_ids(self):
+        """Initialize joint IDs for each face for faster lookup."""
+        for face_name, joint_name in self.face_to_joint_map.items():
+            joint_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_JOINT, joint_name)
+            if joint_id != -1:
+                self.face_joint_ids[face_name] = joint_id
+            else:
+                print(f"Warning: Joint '{joint_name}' for face '{face_name}' not found in model")
     
     def _setup_actuators(self):
         """Setup actuator information and groupings."""
@@ -188,6 +220,14 @@ class RubiksCubeEnvironment:
         self.episode_reward = 0.0
         self.episode_info = {}
         self.contact_history.clear()
+        
+        # Reset rotation tracking
+        self.current_rotation_index = 0
+        self.rotation_started = False
+        self.rotation_completed = False
+        self.initial_joint_angle = None
+        self.rotation_angle_accumulated = 0.0
+        self.rotation_rewards_given.clear()
         
         # Optionally settle the simulation by stepping a few times
         if self.settle_on_reset:
@@ -481,19 +521,23 @@ class RubiksCubeEnvironment:
         grasp_reward = self._calculate_grasp_reward()
         reward += grasp_reward #* 0.5 #0.4
         
-        # 2. Manipulation reward (based on cube rotation) - PRIORITY
+        # 2. Rotation sequence reward (based on face rotation sequence) - PRIORITY
+        rotation_reward = self._calculate_rotation_reward()
+        reward += rotation_reward
+        
+        # 3. Manipulation reward (based on cube rotation) - PRIORITY
         # manipulation_reward = self._calculate_manipulation_reward()
         # reward += manipulation_reward * 0.5 #0.3
         
-        # 3. Cube manipulation reward (based on cube movement and stability)
+        # 4. Cube manipulation reward (based on cube movement and stability)
         # cube_reward = self._calculate_cube_reward()
         # reward += cube_reward * 0.2
         
-        # 4. Efficiency reward (penalize excessive actions)
+        # 5. Efficiency reward (penalize excessive actions)
         # efficiency_reward = self._calculate_efficiency_reward(action)
         # reward += efficiency_reward * 0.05
         
-        # 5. Stability reward (penalize unstable configurations)
+        # 6. Stability reward (penalize unstable configurations)
         # stability_reward = self._calculate_stability_reward()
         # reward += stability_reward * 0.05
         
@@ -589,6 +633,186 @@ class RubiksCubeEnvironment:
         joint_vel = self.data.qvel.copy()
         velocity_penalty = -np.linalg.norm(joint_vel) * 0.01
         return velocity_penalty
+    
+    def _get_face_joint_angle(self, face_name: str) -> float:
+        """
+        Get the current joint angle for a specific face.
+        
+        Args:
+            face_name: Name of the face ('red', 'orange', 'blue', 'green', 'white', 'yellow')
+            
+        Returns:
+            Joint angle in radians, or 0.0 if joint not found
+        """
+        if face_name not in self.face_joint_ids:
+            return 0.0
+        
+        joint_id = self.face_joint_ids[face_name]
+        qpos_adr = self.model.jnt_qposadr[joint_id]
+        # For hinge joints, qpos stores the angle directly
+        # AATHIRA: How to test this?
+        return float(self.data.qpos[qpos_adr])
+    
+    def _get_face_joint_velocity(self, face_name: str) -> float:
+        """
+        Get the current joint angular velocity for a specific face.
+        
+        Args:
+            face_name: Name of the face ('red', 'orange', 'blue', 'green', 'white', 'yellow')
+            
+        Returns:
+            Joint angular velocity in rad/s, or 0.0 if joint not found
+        """
+        if face_name not in self.face_joint_ids:
+            return 0.0
+        
+        joint_id = self.face_joint_ids[face_name]
+        qvel_adr = self.model.jnt_dofadr[joint_id]
+        # For hinge joints, qvel stores the angular velocity directly
+        # AATHIRA: How to test this?
+        return float(self.data.qvel[qvel_adr])
+    
+    def _calculate_rotation_reward(self) -> float:
+        """
+        Calculate reward for rotation sequence completion.
+        Tracks individual face joint rotations, not the entire cube body rotation.
+        
+        Returns:
+            Reward value for rotation progress
+        """
+        # If no rotation sequence is set, return 0
+        if not self.rotation_sequence or self.current_rotation_index >= len(self.rotation_sequence):
+            return 0.0
+        
+        current_face = self.rotation_sequence[self.current_rotation_index]
+        reward = 0.0
+        
+        # Check if joint exists for this face
+        if current_face not in self.face_joint_ids:
+            return 0.0
+        
+        # Get current face joint state
+        current_joint_angle = self._get_face_joint_angle(current_face)
+        current_joint_velocity = self._get_face_joint_velocity(current_face)
+        contact_force = self._get_contact_forces()
+        force_magnitude = np.linalg.norm(contact_force)
+        
+        # Check if rotation has started (hands are rotating the face)
+        if not self.rotation_started:
+            # Rotation starts when there's significant joint angular velocity AND contact
+            if abs(current_joint_velocity) > self.rotation_start_threshold and force_magnitude > 0.5:
+                self.rotation_started = True
+                self.initial_joint_angle = current_joint_angle
+                self.rotation_angle_accumulated = 0.0
+                # Give reward for starting rotation
+                reward += 1.0
+                rotation_key = f"{current_face}_start_{self.current_rotation_index}"
+                if rotation_key not in self.rotation_rewards_given:
+                    self.rotation_rewards_given.add(rotation_key)
+        else:
+            # If rotation started but stopped (low angular velocity for a while), allow restart
+            # This allows the agent to try again if rotation was interrupted
+            if abs(current_joint_velocity) < self.rotation_start_threshold * 0.5 and force_magnitude < 0.3:
+                # Rotation has stopped, but don't reset immediately - give it a chance to continue
+                # Only reset if we've accumulated very little rotation
+                if abs(self.rotation_angle_accumulated) < 0.1:  # Less than ~6 degrees
+                    self.rotation_started = False
+                    self.initial_joint_angle = None
+                    self.rotation_angle_accumulated = 0.0
+        
+        # If rotation has started, track progress
+        if self.rotation_started and not self.rotation_completed:
+            # Calculate rotation angle from initial joint angle
+            if self.initial_joint_angle is not None:
+                # Calculate the change in joint angle
+                angle_change = current_joint_angle - self.initial_joint_angle
+                
+                # Handle angle wrapping (joint angles can wrap around ±π)
+                # Normalize to [-π, π] range
+                # AATHIRA: Understand this?
+                while angle_change > np.pi:
+                    angle_change -= 2 * np.pi
+                while angle_change < -np.pi:
+                    angle_change += 2 * np.pi
+                
+                # Accumulate the absolute rotation angle
+                self.rotation_angle_accumulated = abs(angle_change)
+                
+                # Check if rotation is complete (90 degrees = π/2)
+                if self.rotation_angle_accumulated >= self.rotation_complete_threshold:
+                    self.rotation_completed = True
+                    # Big reward for completing a rotation
+                    reward += 10.0
+                    rotation_key = f"{current_face}_complete_{self.current_rotation_index}"
+                    if rotation_key not in self.rotation_rewards_given:
+                        self.rotation_rewards_given.add(rotation_key)
+                    
+                    # Move to next rotation in sequence
+                    self.current_rotation_index += 1
+                    if self.current_rotation_index < len(self.rotation_sequence):
+                        # Reset for next rotation
+                        self.rotation_started = False
+                        self.rotation_completed = False
+                        self.initial_joint_angle = None
+                        self.rotation_angle_accumulated = 0.0
+                    else:
+                        # Sequence completed! Give big bonus reward
+                        reward += 50.0
+                        sequence_key = "sequence_complete"
+                        if sequence_key not in self.rotation_rewards_given:
+                            self.rotation_rewards_given.add(sequence_key)
+                else:
+                    # Small continuous reward for making progress
+                    progress = self.rotation_angle_accumulated / self.rotation_complete_threshold
+                    reward += 0.1 * progress
+        
+        return reward
+    
+    def _quaternion_inverse(self, q: np.ndarray) -> np.ndarray:
+        """Compute inverse of quaternion (conjugate for unit quaternion)."""
+        # For unit quaternion, inverse is conjugate: [w, -x, -y, -z]
+        return np.array([q[0], -q[1], -q[2], -q[3]])
+    
+    def _quaternion_multiply(self, q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+        """Multiply two quaternions."""
+        w1, x1, y1, z1 = q1
+        w2, x2, y2, z2 = q2
+        
+        w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+        x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+        y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+        z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+        
+        return np.array([w, x, y, z])
+    
+    def set_rotation_sequence(self, sequence: List[str]):
+        """
+        Set the rotation sequence for the episode.
+        
+        Args:
+            sequence: List of face names to rotate (e.g., ['red', 'blue', 'white'])
+                     Each face name should be one of: 'red', 'orange', 'blue', 'green', 'white', 'yellow'
+        """
+        if sequence is None:
+            self.rotation_sequence = []
+        else:
+            # Validate face names
+            valid_faces = {'red', 'orange', 'blue', 'green', 'white', 'yellow'}
+            validated_sequence = []
+            for face in sequence:
+                if face.lower() in valid_faces:
+                    validated_sequence.append(face.lower())
+                else:
+                    print(f"Warning: Invalid face name '{face}' in rotation sequence. Skipping.")
+            self.rotation_sequence = validated_sequence
+        
+        # Reset rotation tracking
+        self.current_rotation_index = 0
+        self.rotation_started = False
+        self.rotation_completed = False
+        self.initial_joint_angle = None
+        self.rotation_angle_accumulated = 0.0
+        self.rotation_rewards_given.clear()
     
     def _is_done(self) -> bool:
         """Check if episode should terminate."""
