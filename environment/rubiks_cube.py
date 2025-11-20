@@ -682,6 +682,7 @@ class RubiksCubeEnvironment:
         """
         # If no rotation sequence is set, return 0
         if not self.rotation_sequence or self.current_rotation_index >= len(self.rotation_sequence):
+            print(f"[ROTATION_REWARD] Case: No rotation sequence or sequence completed")
             return 0.0
         
         current_face = self.rotation_sequence[self.current_rotation_index]
@@ -689,6 +690,7 @@ class RubiksCubeEnvironment:
         
         # Check if joint exists for this face
         if current_face not in self.face_joint_ids:
+            print(f"[ROTATION_REWARD] Case: Invalid face '{current_face}' - joint not found")
             return 0.0
         
         # Get current face joint state
@@ -709,6 +711,12 @@ class RubiksCubeEnvironment:
                 rotation_key = f"{current_face}_start_{self.current_rotation_index}"
                 if rotation_key not in self.rotation_rewards_given:
                     self.rotation_rewards_given.add(rotation_key)
+                    print(f"[ROTATION_REWARD] Case: ROTATION_START | Face: {current_face} | Index: {self.current_rotation_index} | Reward: +1.0 | Velocity: {abs(current_joint_velocity):.3f} rad/s | Force: {force_magnitude:.3f}")
+                else:
+                    print(f"[ROTATION_REWARD] Case: ROTATION_START (already rewarded) | Face: {current_face} | Index: {self.current_rotation_index} | Reward: 0.0")
+            else:
+                # Conditions not met to start rotation
+                print(f"[ROTATION_REWARD] Case: ROTATION_NOT_STARTED | Face: {current_face} | Index: {self.current_rotation_index} | Velocity: {abs(current_joint_velocity):.3f} (need >{self.rotation_start_threshold}) | Force: {force_magnitude:.3f} (need >0.5) | Reward: 0.0")
         else:
             # If rotation started but stopped (low angular velocity for a while), allow restart
             # This allows the agent to try again if rotation was interrupted
@@ -716,6 +724,7 @@ class RubiksCubeEnvironment:
                 # Rotation has stopped, but don't reset immediately - give it a chance to continue
                 # Only reset if we've accumulated very little rotation
                 if abs(self.rotation_angle_accumulated) < 0.1:  # Less than ~6 degrees
+                    print(f"[ROTATION_REWARD] Case: ROTATION_RESET | Face: {current_face} | Index: {self.current_rotation_index} | Accumulated angle too small: {abs(self.rotation_angle_accumulated):.3f} rad | Resetting rotation state")
                     self.rotation_started = False
                     self.initial_joint_angle = None
                     self.rotation_angle_accumulated = 0.0
@@ -751,6 +760,7 @@ class RubiksCubeEnvironment:
                     self.current_rotation_index += 1
                     if self.current_rotation_index < len(self.rotation_sequence):
                         # Reset for next rotation
+                        print(f"[ROTATION_REWARD] Case: ROTATION_COMPLETE | Face: {current_face} | Index: {self.current_rotation_index-1} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° | Reward: +10.0 | Next: {self.rotation_sequence[self.current_rotation_index]}")
                         self.rotation_started = False
                         self.rotation_completed = False
                         self.initial_joint_angle = None
@@ -761,10 +771,15 @@ class RubiksCubeEnvironment:
                         sequence_key = "sequence_complete"
                         if sequence_key not in self.rotation_rewards_given:
                             self.rotation_rewards_given.add(sequence_key)
+                            print(f"[ROTATION_REWARD] Case: SEQUENCE_COMPLETE | Face: {current_face} | Index: {self.current_rotation_index-1} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° | Reward: +10.0 (rotation) +50.0 (sequence) = +60.0 | TOTAL: {reward:.2f}")
+                        else:
+                            print(f"[ROTATION_REWARD] Case: ROTATION_COMPLETE (sequence already rewarded) | Face: {current_face} | Index: {self.current_rotation_index-1} | Reward: +10.0")
                 else:
                     # Small continuous reward for making progress
                     progress = self.rotation_angle_accumulated / self.rotation_complete_threshold
-                    reward += 0.1 * progress
+                    progress_reward = 0.1 * progress
+                    reward += progress_reward
+                    print(f"[ROTATION_REWARD] Case: ROTATION_PROGRESS | Face: {current_face} | Index: {self.current_rotation_index} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° / {np.degrees(self.rotation_complete_threshold):.1f}° | Progress: {progress*100:.1f}% | Reward: +{progress_reward:.3f}")
         
         return reward
     
