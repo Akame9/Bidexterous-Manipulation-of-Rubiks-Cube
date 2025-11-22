@@ -1201,7 +1201,7 @@ if __name__ == "__main__":
     parser.add_argument('--rotation_sequence', type=str, nargs='*', default=None,
                         help='Rotation sequence of face names (e.g., --rotation_sequence blue)')
     parser.add_argument('--enable_gravity', dest='enable_gravity', action='store_true',
-                        help='Override environment gravity with default vector [0, 0, -9.81]')
+                        help='Override environment gravity with default vector [0, 0, 0]')
     parser.add_argument('--disable_gravity', dest='enable_gravity', action='store_false',
                         help='Disable gravity override and use gravity from XML')
     parser.set_defaults(enable_gravity=False)

@@ -167,11 +167,35 @@ class RubiksCubeEnvironment:
                 if body_name and not body_name.startswith('lh_') and not body_name.startswith('rh_') and body_name != 'world':
                     self.cube_body_ids.add(i)
         
+        # Get all fingertip body IDs (distal phalanges only)
+        self.fingertip_body_ids = set()
+        fingertip_suffixes = ['ffdistal', 'mfdistal', 'rfdistal', 'lfdistal', 'thdistal']
+        for i in range(self.model.nbody):
+            body_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, i)
+            if body_name:
+                # Check if body name ends with any fingertip suffix
+                for suffix in fingertip_suffixes:
+                    if body_name.endswith(suffix):
+                        self.fingertip_body_ids.add(i)
+                        break
+        
+        # Get palm body IDs (left and right palm)
+        self.palm_body_ids = set()
+        palm_names = ['lh_palm', 'rh_palm']
+        for palm_name in palm_names:
+            palm_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, palm_name)
+            if palm_id != -1:
+                self.palm_body_ids.add(palm_id)
+            else:
+                print(f"Warning: Palm body '{palm_name}' not found in model")
+        
         print(f"Left hand actuators: {len(self.left_hand_actuators)}")
         print(f"Right hand actuators: {len(self.right_hand_actuators)}")
         print(f"Cube actuators: {len(self.cube_actuators)} (excluded from action space)")
         print(f"Total hand actuators for action space: {len(self.hand_actuators)}")
         print(f"Found {len(self.cube_body_ids)} cube bodies")
+        print(f"Found {len(self.fingertip_body_ids)} fingertip bodies")
+        print(f"Found {len(self.palm_body_ids)} palm bodies")
     
     def _setup_spaces(self):
         """Setup state and action space dimensions."""
@@ -362,13 +386,12 @@ class RubiksCubeEnvironment:
     
     # Aathira : Explain this function?
     def _get_contact_forces(self) -> np.ndarray:
-        """Get contact forces between hands and cube only."""
+        """Get contact forces between fingertips and cube only."""
         contact_force = np.zeros(3)  # [fx, fy, fz]
         
-        # Aggregate contact forces using MuJoCo API, filtering for hand-cube contacts only
+        # Aggregate contact forces using MuJoCo API, filtering for fingertip-cube contacts only
         ncon = self.data.ncon
-        hand_cube_contacts = 0
-        total_raw_force = 0.0
+        fingertip_cube_contacts = 0
         
         if ncon > 0:
             efc_force = np.zeros(6)
@@ -382,28 +405,69 @@ class RubiksCubeEnvironment:
                 body1_id = self.model.geom_bodyid[geom1_id]
                 body2_id = self.model.geom_bodyid[geom2_id]
                 
-                body1_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, body1_id)
-                body2_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, body2_id)
+                is_fingertip_cube_contact = False
                 
-                is_hand_cube_contact = False
-                
-                # Check if one body is a cube body and the other is a hand body
+                # Check if one body is a cube body and the other is a fingertip body
                 body1_is_cube = body1_id in self.cube_body_ids
                 body2_is_cube = body2_id in self.cube_body_ids
-                body1_is_hand = body1_name and ('lh_' in body1_name or 'rh_' in body1_name)
-                body2_is_hand = body2_name and ('lh_' in body2_name or 'rh_' in body2_name)
+                body1_is_fingertip = body1_id in self.fingertip_body_ids
+                body2_is_fingertip = body2_id in self.fingertip_body_ids
                 
-                if (body1_is_cube and body2_is_hand) or (body2_is_cube and body1_is_hand):
-                    is_hand_cube_contact = True
+                if (body1_is_cube and body2_is_fingertip) or (body2_is_cube and body1_is_fingertip):
+                    is_fingertip_cube_contact = True
                 
-                # Only accumulate forces from hand-cube contacts
-                if is_hand_cube_contact:
+                # Only accumulate forces from fingertip-cube contacts
+                if is_fingertip_cube_contact:
                     mj.mj_contactForce(self.model, self.data, i, efc_force)
-                    contact_force += efc_force[0:3] #* 1.0  # accumulate normal force (fx, fy, fz)
-                    hand_cube_contacts += 1
+                    contact_force += efc_force[0:3]  # accumulate normal force (fx, fy, fz)
+                    fingertip_cube_contacts += 1
             
         
         return contact_force
+    
+    def _get_palm_contact_forces(self) -> float:
+        """
+        Get contact forces between palms and cube.
+        
+        Returns:
+            Force magnitude of palm-cube contacts (scalar)
+        """
+        palm_contact_force_magnitude = 0.0
+        
+        # Check for palm-cube contacts using MuJoCo API
+        ncon = self.data.ncon
+        
+        if ncon > 0:
+            efc_force = np.zeros(6)
+            for i in range(ncon):
+                # Get contact information
+                contact = self.data.contact[i]
+                geom1_id = contact.geom1
+                geom2_id = contact.geom2
+                
+                # Get body IDs for the geometries
+                body1_id = self.model.geom_bodyid[geom1_id]
+                body2_id = self.model.geom_bodyid[geom2_id]
+                
+                is_palm_cube_contact = False
+                
+                # Check if one body is a cube body and the other is a palm body
+                body1_is_cube = body1_id in self.cube_body_ids
+                body2_is_cube = body2_id in self.cube_body_ids
+                body1_is_palm = body1_id in self.palm_body_ids
+                body2_is_palm = body2_id in self.palm_body_ids
+                
+                if (body1_is_cube and body2_is_palm) or (body2_is_cube and body1_is_palm):
+                    is_palm_cube_contact = True
+                
+                # Accumulate forces from palm-cube contacts
+                if is_palm_cube_contact:
+                    mj.mj_contactForce(self.model, self.data, i, efc_force)
+                    contact_force = efc_force[0:3]  # Normal force (fx, fy, fz)
+                    force_magnitude = np.linalg.norm(contact_force)
+                    palm_contact_force_magnitude += force_magnitude
+        
+        return palm_contact_force_magnitude
     
     def get_action(self, action_vector: np.ndarray) -> Dict[str, np.ndarray]:
         """
@@ -517,27 +581,31 @@ class RubiksCubeEnvironment:
         """
         reward = 0.0
         
-        # 1. Grasping reward (based on contact forces) - PRIORITY
+        #1. Grasping reward (based on contact forces) - PRIORITY
         grasp_reward = self._calculate_grasp_reward()
         reward += grasp_reward #* 0.5 #0.4
         
-        # 2. Rotation sequence reward (based on face rotation sequence) - PRIORITY
+        # # 2. Palm contact penalty (penalize palm-cube contact) - PRIORITY
+        palm_penalty = self._calculate_palm_penalty()
+        reward += palm_penalty
+        
+        # 3. Rotation sequence reward (based on face rotation sequence) - PRIORITY
         rotation_reward = self._calculate_rotation_reward()
         reward += rotation_reward
         
-        # 3. Manipulation reward (based on cube rotation) - PRIORITY
+        # 4. Manipulation reward (based on cube rotation) - PRIORITY
         # manipulation_reward = self._calculate_manipulation_reward()
         # reward += manipulation_reward * 0.5 #0.3
         
-        # 4. Cube manipulation reward (based on cube movement and stability)
+        # 5. Cube manipulation reward (based on cube movement and stability)
         # cube_reward = self._calculate_cube_reward()
         # reward += cube_reward * 0.2
         
-        # 5. Efficiency reward (penalize excessive actions)
+        # 6. Efficiency reward (penalize excessive actions)
         # efficiency_reward = self._calculate_efficiency_reward(action)
         # reward += efficiency_reward * 0.05
         
-        # 6. Stability reward (penalize unstable configurations)
+        # 7. Stability reward (penalize unstable configurations)
         # stability_reward = self._calculate_stability_reward()
         # reward += stability_reward * 0.05
         
@@ -569,9 +637,9 @@ class RubiksCubeEnvironment:
             if force_magnitude < 1.0:
                 # print(f"GRASP REWARD: Very light grasp (force={force_magnitude:.3f}) -> +0.5")
                 return 0.0 
-            elif force_magnitude < 3.0:
-                # print(f"GRASP REWARD: Gentle grasp (force={force_magnitude:.3f}) -> +2.0")
-                return 2.0  # Strong reward for gentle but firm grasp
+            # elif force_magnitude < 3.0:
+            #     # print(f"GRASP REWARD: Gentle grasp (force={force_magnitude:.3f}) -> +2.0")
+            #     return 2.0  # Strong reward for gentle but firm grasp
             elif force_magnitude < 5.0:
                 # print(f"GRASP REWARD: Moderate grasp (force={force_magnitude:.3f}) -> +1.0")
                 return 1.0  
@@ -581,6 +649,28 @@ class RubiksCubeEnvironment:
         else:
             # print(f"GRASP REWARD: No contact (force={force_magnitude:.3f}) -> -0.5")
             return -0.5  # Penalty for no contact (encourage grasping)
+    
+    def _calculate_palm_penalty(self) -> float:
+        """
+        Calculate penalty for palm-cube contact.
+        Palms should not contact the cube - only fingertips should.
+        
+        Returns:
+            Negative penalty value (penalty increases with palm contact force)
+        """
+        palm_contact_force = self._get_palm_contact_forces()
+        
+        if palm_contact_force > 0.01:  # Small threshold to ignore noise
+            # Penalty proportional to palm contact force
+            # Higher force = larger penalty
+            penalty = -palm_contact_force * 0.5  # Scale penalty
+            # Cap the penalty to avoid extreme values
+            penalty = max(penalty, -5.0)
+            # print(f"PALM PENALTY: Palm-cube contact (force={palm_contact_force:.3f}) -> {penalty:.3f}")
+            return penalty
+        else:
+            # No palm contact - no penalty
+            return 0.0
     
     def _calculate_manipulation_reward(self) -> float:
         """Calculate reward for cube manipulation success."""
@@ -682,7 +772,7 @@ class RubiksCubeEnvironment:
         """
         # If no rotation sequence is set, return 0
         if not self.rotation_sequence or self.current_rotation_index >= len(self.rotation_sequence):
-            print(f"[ROTATION_REWARD] Case: No rotation sequence or sequence completed")
+            # print(f"[ROTATION_REWARD] Case: No rotation sequence or sequence completed")
             return 0.0
         
         current_face = self.rotation_sequence[self.current_rotation_index]
@@ -690,7 +780,7 @@ class RubiksCubeEnvironment:
         
         # Check if joint exists for this face
         if current_face not in self.face_joint_ids:
-            print(f"[ROTATION_REWARD] Case: Invalid face '{current_face}' - joint not found")
+            # print(f"[ROTATION_REWARD] Case: Invalid face '{current_face}' - joint not found")
             return 0.0
         
         # Get current face joint state
@@ -711,12 +801,14 @@ class RubiksCubeEnvironment:
                 rotation_key = f"{current_face}_start_{self.current_rotation_index}"
                 if rotation_key not in self.rotation_rewards_given:
                     self.rotation_rewards_given.add(rotation_key)
-                    print(f"[ROTATION_REWARD] Case: ROTATION_START | Face: {current_face} | Index: {self.current_rotation_index} | Reward: +1.0 | Velocity: {abs(current_joint_velocity):.3f} rad/s | Force: {force_magnitude:.3f}")
+                    # print(f"[ROTATION_REWARD] Case: ROTATION_START | Face: {current_face} | Index: {self.current_rotation_index} | Reward: +1.0 | Velocity: {abs(current_joint_velocity):.3f} rad/s | Force: {force_magnitude:.3f}")
                 else:
-                    print(f"[ROTATION_REWARD] Case: ROTATION_START (already rewarded) | Face: {current_face} | Index: {self.current_rotation_index} | Reward: 0.0")
+                    pass
+                    # print(f"[ROTATION_REWARD] Case: ROTATION_START (already rewarded) | Face: {current_face} | Index: {self.current_rotation_index} | Reward: 0.0")
             else:
+                pass
                 # Conditions not met to start rotation
-                print(f"[ROTATION_REWARD] Case: ROTATION_NOT_STARTED | Face: {current_face} | Index: {self.current_rotation_index} | Velocity: {abs(current_joint_velocity):.3f} (need >{self.rotation_start_threshold}) | Force: {force_magnitude:.3f} (need >0.5) | Reward: 0.0")
+                # print(f"[ROTATION_REWARD] Case: ROTATION_NOT_STARTED | Face: {current_face} | Index: {self.current_rotation_index} | Velocity: {abs(current_joint_velocity):.3f} (need >{self.rotation_start_threshold}) | Force: {force_magnitude:.3f} (need >0.5) | Reward: 0.0")
         else:
             # If rotation started but stopped (low angular velocity for a while), allow restart
             # This allows the agent to try again if rotation was interrupted
@@ -724,7 +816,7 @@ class RubiksCubeEnvironment:
                 # Rotation has stopped, but don't reset immediately - give it a chance to continue
                 # Only reset if we've accumulated very little rotation
                 if abs(self.rotation_angle_accumulated) < 0.1:  # Less than ~6 degrees
-                    print(f"[ROTATION_REWARD] Case: ROTATION_RESET | Face: {current_face} | Index: {self.current_rotation_index} | Accumulated angle too small: {abs(self.rotation_angle_accumulated):.3f} rad | Resetting rotation state")
+                    # print(f"[ROTATION_REWARD] Case: ROTATION_RESET | Face: {current_face} | Index: {self.current_rotation_index} | Accumulated angle too small: {abs(self.rotation_angle_accumulated):.3f} rad | Resetting rotation state")
                     self.rotation_started = False
                     self.initial_joint_angle = None
                     self.rotation_angle_accumulated = 0.0
@@ -760,7 +852,7 @@ class RubiksCubeEnvironment:
                     self.current_rotation_index += 1
                     if self.current_rotation_index < len(self.rotation_sequence):
                         # Reset for next rotation
-                        print(f"[ROTATION_REWARD] Case: ROTATION_COMPLETE | Face: {current_face} | Index: {self.current_rotation_index-1} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° | Reward: +10.0 | Next: {self.rotation_sequence[self.current_rotation_index]}")
+                        # print(f"[ROTATION_REWARD] Case: ROTATION_COMPLETE | Face: {current_face} | Index: {self.current_rotation_index-1} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° | Reward: +10.0 | Next: {self.rotation_sequence[self.current_rotation_index]}")
                         self.rotation_started = False
                         self.rotation_completed = False
                         self.initial_joint_angle = None
@@ -771,15 +863,16 @@ class RubiksCubeEnvironment:
                         sequence_key = "sequence_complete"
                         if sequence_key not in self.rotation_rewards_given:
                             self.rotation_rewards_given.add(sequence_key)
-                            print(f"[ROTATION_REWARD] Case: SEQUENCE_COMPLETE | Face: {current_face} | Index: {self.current_rotation_index-1} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° | Reward: +10.0 (rotation) +50.0 (sequence) = +60.0 | TOTAL: {reward:.2f}")
+                            # print(f"[ROTATION_REWARD] Case: SEQUENCE_COMPLETE | Face: {current_face} | Index: {self.current_rotation_index-1} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° | Reward: +10.0 (rotation) +50.0 (sequence) = +60.0 | TOTAL: {reward:.2f}")
                         else:
-                            print(f"[ROTATION_REWARD] Case: ROTATION_COMPLETE (sequence already rewarded) | Face: {current_face} | Index: {self.current_rotation_index-1} | Reward: +10.0")
+                            pass
+                            # print(f"[ROTATION_REWARD] Case: ROTATION_COMPLETE (sequence already rewarded) | Face: {current_face} | Index: {self.current_rotation_index-1} | Reward: +10.0")
                 else:
                     # Small continuous reward for making progress
                     progress = self.rotation_angle_accumulated / self.rotation_complete_threshold
                     progress_reward = 0.1 * progress
                     reward += progress_reward
-                    print(f"[ROTATION_REWARD] Case: ROTATION_PROGRESS | Face: {current_face} | Index: {self.current_rotation_index} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° / {np.degrees(self.rotation_complete_threshold):.1f}° | Progress: {progress*100:.1f}% | Reward: +{progress_reward:.3f}")
+                    # print(f"[ROTATION_REWARD] Case: ROTATION_PROGRESS | Face: {current_face} | Index: {self.current_rotation_index} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° / {np.degrees(self.rotation_complete_threshold):.1f}° | Progress: {progress*100:.1f}% | Reward: +{progress_reward:.3f}")
         
         return reward
     

@@ -94,7 +94,7 @@
   <worldbody>
     <light pos="0 0 1"/>
     <body name="core" childclass="cubelet" pos="0.4 0 0.03">
-      <freejoint name="cube_free"/>
+      <!-- <freejoint name="cube_free"/> -->
       <geom class="core"/>
       <body name="pX">
         <joint name="pX" type="hinge" axis="1 0 0"/>
