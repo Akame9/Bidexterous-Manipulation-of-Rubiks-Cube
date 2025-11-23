@@ -920,7 +920,8 @@ class PPOAgent:
     def load_model(self, filepath):
         """Load a trained model."""
         if os.path.exists(filepath):
-            checkpoint = torch.load(filepath, map_location=self.device)
+            # weights_only=False is needed for PyTorch 2.6+ to load checkpoints with numpy objects
+            checkpoint = torch.load(filepath, map_location=self.device, weights_only=False)
             self.policy.load_state_dict(checkpoint['policy_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             self.training_stats = checkpoint.get('training_stats', self.training_stats)
@@ -1211,6 +1212,7 @@ if __name__ == "__main__":
     parser.add_argument('--project', type=str, default='mujoco-rubiks-ppo', help='wandb project name')
     parser.add_argument('--run_name', type=str, default=None, help='wandb run name')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    parser.add_argument('--load_model', type=str, default=None, help='Path to model checkpoint to load before training')
     args = parser.parse_args()
     
     # Set default for clip_vloss if not provided (defaults to True)
@@ -1285,6 +1287,10 @@ if __name__ == "__main__":
         value_clip_coef=args.value_clip_coef,
         value_loss_mode=args.value_loss_mode,
     )
+
+    # Load model if specified
+    if args.load_model:
+        agent.load_model(args.load_model)
 
     # Train
     try:
