@@ -961,24 +961,53 @@ def train_ppo_agent_vec(env_fn, agent, num_episodes=1000, max_steps=500,
                 agent.update()
                 episodes_since_update = 0
             
-            # Logging
+            # Logging - log the last num_envs episodes' rewards, lengths, and losses
             if _WANDB_AVAILABLE and wandb.run is not None:
-                if agent.training_stats['episode_rewards']:
-                    log_payload = {
-                        'episode': total_episodes,
-                        'episode/reward': agent.training_stats['episode_rewards'][-1],
-                        'episode/length': agent.training_stats['episode_lengths'][-1],
-                    }
-                    for key in ['policy_loss', 'value_loss', 'entropy_loss', 'total_loss']:
-                        if agent.training_stats[key]:
-                            log_payload[f'loss/{key}'] = agent.training_stats[key][-1]
-                    if agent.training_stats['learning_rate']:
-                        log_payload['train/learning_rate'] = agent.training_stats['learning_rate'][-1]
-                    if len(agent.training_stats['episode_rewards']) >= 10:
-                        log_payload['episode/avg_reward_10'] = float(np.mean(agent.training_stats['episode_rewards'][-10:]))
-                    if len(agent.training_stats['episode_lengths']) >= 10:
-                        log_payload['episode/avg_length_10'] = float(np.mean(agent.training_stats['episode_lengths'][-10:]))
-                    wandb.log(log_payload)
+                # Log the last num_envs episodes
+                num_episodes_to_log = min(num_envs, len(agent.training_stats['episode_rewards']))
+                if num_episodes_to_log > 0:
+                    # Get the last num_envs episodes
+                    start_idx = len(agent.training_stats['episode_rewards']) - num_episodes_to_log
+                    
+                    for i in range(num_episodes_to_log):
+                        idx = start_idx + i
+                        episode_num = total_episodes - num_episodes_to_log + i + 1  # Episode number (1-indexed)
+                        log_payload = {
+                            'episode': episode_num,
+                            'episode/reward': agent.training_stats['episode_rewards'][idx],
+                            'episode/length': agent.training_stats['episode_lengths'][idx],
+                        }
+                        
+                        # Add loss metrics - log the last num_envs loss values
+                        for key in ['policy_loss', 'value_loss', 'entropy_loss', 'total_loss']:
+                            if agent.training_stats[key]:
+                                num_losses = len(agent.training_stats[key])
+                                if num_losses > 0:
+                                    # Log the last num_envs loss values (or most recent if fewer available)
+                                    loss_start_idx = max(0, num_losses - num_episodes_to_log)
+                                    loss_idx = min(loss_start_idx + i, num_losses - 1)
+                                    log_payload[f'loss/{key}'] = agent.training_stats[key][loss_idx]
+                        
+                        # Add learning rate - log the last num_envs learning rate values
+                        if agent.training_stats['learning_rate']:
+                            num_lrs = len(agent.training_stats['learning_rate'])
+                            if num_lrs > 0:
+                                # Log the last num_envs learning rate values (or most recent if fewer available)
+                                lr_start_idx = max(0, num_lrs - num_episodes_to_log)
+                                lr_idx = min(lr_start_idx + i, num_lrs - 1)
+                                log_payload['train/learning_rate'] = agent.training_stats['learning_rate'][lr_idx]
+                        
+                        # Add running averages - calculate for each episode being logged
+                        # Calculate average of last 10 episodes up to and including current episode
+                        if idx >= 0:
+                            # Calculate 10-episode average ending at current episode
+                            avg_start_idx = max(0, idx - 9)
+                            avg_end_idx = idx + 1
+                            if avg_end_idx > avg_start_idx:
+                                log_payload['episode/avg_reward_10'] = float(np.mean(agent.training_stats['episode_rewards'][avg_start_idx:avg_end_idx]))
+                                log_payload['episode/avg_length_10'] = float(np.mean(agent.training_stats['episode_lengths'][avg_start_idx:avg_end_idx]))
+                        
+                        wandb.log(log_payload)
             
             # Print progress
             if total_episodes % 10 == 0 and agent.training_stats['episode_rewards']:

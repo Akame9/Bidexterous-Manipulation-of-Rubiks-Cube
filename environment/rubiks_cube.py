@@ -95,6 +95,9 @@ class RubiksCubeEnvironment:
         # Target cube configuration (for reward calculation)
         self.target_cube_config = self._get_initial_cube_config()
         
+        # Initial cube position (stored during initialize() for displacement reward)
+        self.initial_cube_position = None
+        
         # Rotation sequence tracking
         # rotation_sequence stores tuples of (face_name, direction) where direction is +1 for clockwise (+90°) or -1 for anti-clockwise (-90°)
         self.rotation_sequence = []
@@ -244,6 +247,9 @@ class RubiksCubeEnvironment:
         
         # Set initial cube position
         self._set_initial_cube_pose()
+        
+        # Store initial cube position for displacement reward calculation
+        self.initial_cube_position = self._get_cube_position().copy()
         
         # Reset episode variables
         self.current_step = 0
@@ -597,7 +603,7 @@ class RubiksCubeEnvironment:
         reward += palm_penalty
         
         # 3. Rotation sequence reward (based on face rotation sequence) - PRIORITY
-        rotation_reward = self._calculate_rotation_reward_v2()
+        rotation_reward = self._calculate_rotation_reward()
         reward += rotation_reward
         
         # 4. Manipulation reward (based on cube rotation) - PRIORITY
@@ -731,6 +737,29 @@ class RubiksCubeEnvironment:
         velocity_penalty = -np.linalg.norm(joint_vel) * 0.01
         return velocity_penalty
     
+    def _calculate_displacement_reward(self) -> float:
+        """
+        Calculate penalty based on how far the cube is displaced from its original initial position.
+        
+        Returns:
+            Negative penalty value (penalty increases with displacement distance)
+        """
+        # Get current cube position
+        current_pos = self._get_cube_position()
+        
+        # Check if initial position has been set
+        if self.initial_cube_position is None:
+            return 0.0
+        
+        # Calculate Euclidean distance from initial position
+        displacement = np.linalg.norm(current_pos - self.initial_cube_position)
+        
+        # Calculate penalty proportional to displacement
+        # Penalty increases with distance from initial position
+        penalty = -displacement
+        
+        return penalty
+    
     def _get_face_joint_angle(self, face_name: str) -> float:
         """
         Get the current joint angle for a specific face.
@@ -809,7 +838,7 @@ class RubiksCubeEnvironment:
                     for face_name in self.face_joint_ids.keys():
                         self.face_initial_angles[face_name] = self._get_face_joint_angle(face_name)
                 # Give reward for starting rotation
-                reward += 1.0
+                reward += 10.0
                 rotation_key = f"{current_face}_start_{self.current_rotation_index}"
                 if rotation_key not in self.rotation_rewards_given:
                     self.rotation_rewards_given.add(rotation_key)
@@ -821,20 +850,20 @@ class RubiksCubeEnvironment:
                 pass
                 # Conditions not met to start rotation
                 # print(f"[ROTATION_REWARD] Case: ROTATION_NOT_STARTED | Face: {current_face} | Index: {self.current_rotation_index} | Velocity: {abs(current_joint_velocity):.3f} (need >{self.rotation_start_threshold}) | Force: {force_magnitude:.3f} (need >0.5) | Reward: 0.0")
-        # else:
-        #     # If rotation started but stopped (low angular velocity for a while), allow restart
-        #     # This allows the agent to try again if rotation was interrupted
-        #     if abs(current_joint_velocity) < self.rotation_start_threshold * 0.5 and force_magnitude < 0.3:
-        #         # Rotation has stopped, but don't reset immediately - give it a chance to continue
-        #         # Only reset if we've accumulated very little rotation
-        #         if abs(self.rotation_angle_accumulated) < 0.1:  # Less than ~6 degrees
-        #             # print(f"[ROTATION_REWARD] Case: ROTATION_RESET | Face: {current_face} | Index: {self.current_rotation_index} | Accumulated angle too small: {abs(self.rotation_angle_accumulated):.3f} rad | Resetting rotation state")
-        #             self.rotation_started = False
-        #             self.initial_joint_angle = None
-        #             self.rotation_angle_accumulated = 0.0
-        #             self.rotation_direction_actual = 0.0
-        #             # Reset initial angles when rotation is reset
-        #             self.face_initial_angles = {}
+        else:
+            # If rotation started but stopped (low angular velocity for a while), allow restart
+            # This allows the agent to try again if rotation was interrupted
+            if abs(current_joint_velocity) < self.rotation_start_threshold * 0.5 and force_magnitude < 0.3:
+                # Rotation has stopped, but don't reset immediately - give it a chance to continue
+                # Only reset if we've accumulated very little rotation
+                if abs(self.rotation_angle_accumulated) < 0.1:  # Less than ~6 degrees
+                    # print(f"[ROTATION_REWARD] Case: ROTATION_RESET | Face: {current_face} | Index: {self.current_rotation_index} | Accumulated angle too small: {abs(self.rotation_angle_accumulated):.3f} rad | Resetting rotation state")
+                    self.rotation_started = False
+                    self.initial_joint_angle = None
+                    self.rotation_angle_accumulated = 0.0
+                    self.rotation_direction_actual = 0.0
+                    # Reset initial angles when rotation is reset
+                    self.face_initial_angles = {}
         
         # If rotation has started, track progress
         if self.rotation_started and not self.rotation_completed:
@@ -875,7 +904,7 @@ class RubiksCubeEnvironment:
                 if self.rotation_angle_accumulated >= self.rotation_complete_threshold and direction_correct:
                     self.rotation_completed = True
                     # Big reward for completing a rotation in the correct direction
-                    reward += 10.0
+                    reward += 100.0
                     rotation_key = f"{current_face}_{'clock' if desired_direction > 0 else 'anti_clock'}_complete_{self.current_rotation_index}"
                     if rotation_key not in self.rotation_rewards_given:
                         self.rotation_rewards_given.add(rotation_key)
@@ -908,7 +937,7 @@ class RubiksCubeEnvironment:
                 elif direction_correct:
                     # Small continuous reward for making progress in correct direction
                     progress = self.rotation_angle_accumulated / self.rotation_complete_threshold
-                    progress_reward = 0.1 * progress
+                    progress_reward = 1 * progress
                     reward += progress_reward
                     # print(f"[ROTATION_REWARD] Case: ROTATION_PROGRESS | Face: {current_face} | Direction: {'clock' if desired_direction > 0 else 'anti_clock'} | Index: {self.current_rotation_index} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° / {np.degrees(self.rotation_complete_threshold):.1f}° | Progress: {progress*100:.1f}% | Reward: +{progress_reward:.3f}")
                 # else: rotating in wrong direction, no reward
@@ -1184,9 +1213,9 @@ class RubiksCubeEnvironment:
         
         # Cube dropped (fell too low)
         cube_pos = self._get_cube_position()
-        # if cube_pos[2] < 0.05:  # Cube below 5cm
-        #     self.episode_info['termination_reason'] = 'cube_dropped'
-        #     return True
+        if cube_pos[2] < 0.05:  # Cube below 5cm
+            self.episode_info['termination_reason'] = 'cube_dropped'
+            return True
         
         # Cube moved too far from workspace
         if np.linalg.norm(cube_pos[:2]) > self.workspace_radius:  # Cube moved too far from center
