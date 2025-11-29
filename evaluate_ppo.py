@@ -226,6 +226,8 @@ def main():
                        help='Device (auto, cpu, cuda, cuda:0, etc.)')
     parser.add_argument('--gpu_id', type=int, default=0,
                        help='GPU ID to use')
+    parser.add_argument('--rotation_sequence', type=str, default=None,
+                       help='Comma-separated list of face names to rotate (e.g., "red,blue,white")')
     
     args = parser.parse_args()
     

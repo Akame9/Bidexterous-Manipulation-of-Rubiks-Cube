@@ -6,8 +6,8 @@ Episodes: 10
 Deterministic: False
 
 Results:
-Average Reward: 22.67 ± 11.05
-Average Length: 432.00 ± 108.56
+Average Reward: 22.67 ï¿½ 11.05
+Average Length: 432.00 ï¿½ 108.56
 
 Episode Details:
 Episode 1: Reward=28.36, Length=500

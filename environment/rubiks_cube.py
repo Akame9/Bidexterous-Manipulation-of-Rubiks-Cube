@@ -27,7 +27,7 @@ class RubiksCubeEnvironment:
     """
     
     def __init__(self, xml_path="xmls/bidexhands.xml", timestep=0.002, 
-                 max_episode_steps=1000, enable_viewer=False, 
+                 max_episode_steps=500, enable_viewer=False, 
                  visualize_collision_boxes=False, workspace_radius=0.8,
                  settle_on_reset=False, enable_gravity=False,
                  gravity_vector=None, rotation_sequence=None):
@@ -96,14 +96,20 @@ class RubiksCubeEnvironment:
         self.target_cube_config = self._get_initial_cube_config()
         
         # Rotation sequence tracking
-        self.rotation_sequence = rotation_sequence if rotation_sequence is not None else []
+        # rotation_sequence stores tuples of (face_name, direction) where direction is +1 for clockwise (+90°) or -1 for anti-clockwise (-90°)
+        self.rotation_sequence = []
+        if rotation_sequence is not None:
+            self._parse_rotation_sequence(rotation_sequence)
         self.current_rotation_index = 0  # Index of current face in sequence
         self.rotation_started = False  # Whether current rotation has started
         self.rotation_completed = False  # Whether current rotation has completed
         self.initial_joint_angle = None  # Joint angle when rotation started
         self.rotation_angle_accumulated = 0.0  # Accumulated rotation angle
+        self.rotation_direction_actual = 0.0  # Actual rotation direction (positive or negative)
         self.rotation_start_threshold = 0.1  # Angular velocity threshold to detect rotation start (rad/s)
         self.rotation_complete_threshold = np.pi / 2.0  # 90 degrees for complete rotation
+        self.face_initial_angles = {}  # Store initial angles for all faces when rotation starts (for wrong face penalty)
+        self.wrong_face_rotation_penalty_coef = 0.5  # Coefficient for wrong face rotation penalty
         # Map face names to joint names (from cube_rad.xml structure)
         self.face_to_joint_map = {
             'red': 'pX',      # Red face uses pX joint (positive X axis)
@@ -251,6 +257,7 @@ class RubiksCubeEnvironment:
         self.rotation_completed = False
         self.initial_joint_angle = None
         self.rotation_angle_accumulated = 0.0
+        self.rotation_direction_actual = 0.0
         self.rotation_rewards_given.clear()
         
         # Optionally settle the simulation by stepping a few times
@@ -590,7 +597,7 @@ class RubiksCubeEnvironment:
         reward += palm_penalty
         
         # 3. Rotation sequence reward (based on face rotation sequence) - PRIORITY
-        rotation_reward = self._calculate_rotation_reward()
+        rotation_reward = self._calculate_rotation_reward_v2()
         reward += rotation_reward
         
         # 4. Manipulation reward (based on cube rotation) - PRIORITY
@@ -634,18 +641,18 @@ class RubiksCubeEnvironment:
         # Enhanced grasping reward for learning to grab the cube
         if force_magnitude > 0.05:  # Any contact is good
             # Reward increases with contact up to optimal range
-            if force_magnitude < 1.0:
+            # if force_magnitude < 1.0:
                 # print(f"GRASP REWARD: Very light grasp (force={force_magnitude:.3f}) -> +0.5")
-                return 0.0 
+                # return 0.0 
             # elif force_magnitude < 3.0:
             #     # print(f"GRASP REWARD: Gentle grasp (force={force_magnitude:.3f}) -> +2.0")
             #     return 2.0  # Strong reward for gentle but firm grasp
-            elif force_magnitude < 5.0:
+            # elif force_magnitude < 5.0:
                 # print(f"GRASP REWARD: Moderate grasp (force={force_magnitude:.3f}) -> +1.0")
-                return 1.0  
-            else:
+                # return 1.0  
+            # else:
                 # print(f"GRASP REWARD: Excessive force (force={force_magnitude:.3f}) -> +0.5")
-                return 0.5  # Reduced reward for excessive force
+            return 0.5  # Reduced reward for excessive force
         else:
             # print(f"GRASP REWARD: No contact (force={force_magnitude:.3f}) -> -0.5")
             return -0.5  # Penalty for no contact (encourage grasping)
@@ -775,7 +782,8 @@ class RubiksCubeEnvironment:
             # print(f"[ROTATION_REWARD] Case: No rotation sequence or sequence completed")
             return 0.0
         
-        current_face = self.rotation_sequence[self.current_rotation_index]
+        # Extract face name and desired direction from tuple
+        current_face, desired_direction = self.rotation_sequence[self.current_rotation_index]
         reward = 0.0
         
         # Check if joint exists for this face
@@ -796,6 +804,10 @@ class RubiksCubeEnvironment:
                 self.rotation_started = True
                 self.initial_joint_angle = current_joint_angle
                 self.rotation_angle_accumulated = 0.0
+                # Initialize angles for all faces to track wrong face rotations
+                if not self.face_initial_angles:
+                    for face_name in self.face_joint_ids.keys():
+                        self.face_initial_angles[face_name] = self._get_face_joint_angle(face_name)
                 # Give reward for starting rotation
                 reward += 1.0
                 rotation_key = f"{current_face}_start_{self.current_rotation_index}"
@@ -809,17 +821,20 @@ class RubiksCubeEnvironment:
                 pass
                 # Conditions not met to start rotation
                 # print(f"[ROTATION_REWARD] Case: ROTATION_NOT_STARTED | Face: {current_face} | Index: {self.current_rotation_index} | Velocity: {abs(current_joint_velocity):.3f} (need >{self.rotation_start_threshold}) | Force: {force_magnitude:.3f} (need >0.5) | Reward: 0.0")
-        else:
-            # If rotation started but stopped (low angular velocity for a while), allow restart
-            # This allows the agent to try again if rotation was interrupted
-            if abs(current_joint_velocity) < self.rotation_start_threshold * 0.5 and force_magnitude < 0.3:
-                # Rotation has stopped, but don't reset immediately - give it a chance to continue
-                # Only reset if we've accumulated very little rotation
-                if abs(self.rotation_angle_accumulated) < 0.1:  # Less than ~6 degrees
-                    # print(f"[ROTATION_REWARD] Case: ROTATION_RESET | Face: {current_face} | Index: {self.current_rotation_index} | Accumulated angle too small: {abs(self.rotation_angle_accumulated):.3f} rad | Resetting rotation state")
-                    self.rotation_started = False
-                    self.initial_joint_angle = None
-                    self.rotation_angle_accumulated = 0.0
+        # else:
+        #     # If rotation started but stopped (low angular velocity for a while), allow restart
+        #     # This allows the agent to try again if rotation was interrupted
+        #     if abs(current_joint_velocity) < self.rotation_start_threshold * 0.5 and force_magnitude < 0.3:
+        #         # Rotation has stopped, but don't reset immediately - give it a chance to continue
+        #         # Only reset if we've accumulated very little rotation
+        #         if abs(self.rotation_angle_accumulated) < 0.1:  # Less than ~6 degrees
+        #             # print(f"[ROTATION_REWARD] Case: ROTATION_RESET | Face: {current_face} | Index: {self.current_rotation_index} | Accumulated angle too small: {abs(self.rotation_angle_accumulated):.3f} rad | Resetting rotation state")
+        #             self.rotation_started = False
+        #             self.initial_joint_angle = None
+        #             self.rotation_angle_accumulated = 0.0
+        #             self.rotation_direction_actual = 0.0
+        #             # Reset initial angles when rotation is reset
+        #             self.face_initial_angles = {}
         
         # If rotation has started, track progress
         if self.rotation_started and not self.rotation_completed:
@@ -836,15 +851,32 @@ class RubiksCubeEnvironment:
                 while angle_change < -np.pi:
                     angle_change += 2 * np.pi
                 
-                # Accumulate the absolute rotation angle
-                self.rotation_angle_accumulated = abs(angle_change)
+                # Track actual rotation direction (sign of angle_change)
+                # Positive angle_change means clockwise rotation, negative means anti-clockwise
+                actual_direction = 1 if angle_change > 0 else -1 if angle_change < 0 else 0
+                self.rotation_direction_actual = actual_direction
                 
-                # Check if rotation is complete (90 degrees = π/2)
-                if self.rotation_angle_accumulated >= self.rotation_complete_threshold:
+                # Check if rotation is in the correct direction
+                direction_correct = (actual_direction == desired_direction) if actual_direction != 0 else False
+                
+                # Only accumulate angle if rotating in the correct direction
+                # If rotating in wrong direction, don't accumulate (or accumulate negatively as penalty)
+                if direction_correct:
+                    # Accumulate the absolute rotation angle only if direction is correct
+                    self.rotation_angle_accumulated = abs(angle_change)
+                else:
+                    # Rotating in wrong direction - reset accumulated angle or penalize
+                    # Don't accumulate progress if going in wrong direction
+                    self.rotation_angle_accumulated = 0.0
+                    # Could add a small penalty here if desired
+                    # reward -= 0.01  # Small penalty for wrong direction
+                
+                # Check if rotation is complete (90 degrees = π/2) AND in correct direction
+                if self.rotation_angle_accumulated >= self.rotation_complete_threshold and direction_correct:
                     self.rotation_completed = True
-                    # Big reward for completing a rotation
+                    # Big reward for completing a rotation in the correct direction
                     reward += 10.0
-                    rotation_key = f"{current_face}_complete_{self.current_rotation_index}"
+                    rotation_key = f"{current_face}_{'clock' if desired_direction > 0 else 'anti_clock'}_complete_{self.current_rotation_index}"
                     if rotation_key not in self.rotation_rewards_given:
                         self.rotation_rewards_given.add(rotation_key)
                     
@@ -852,29 +884,220 @@ class RubiksCubeEnvironment:
                     self.current_rotation_index += 1
                     if self.current_rotation_index < len(self.rotation_sequence):
                         # Reset for next rotation
-                        # print(f"[ROTATION_REWARD] Case: ROTATION_COMPLETE | Face: {current_face} | Index: {self.current_rotation_index-1} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° | Reward: +10.0 | Next: {self.rotation_sequence[self.current_rotation_index]}")
+                        next_face, next_dir = self.rotation_sequence[self.current_rotation_index]
+                        # print(f"[ROTATION_REWARD] Case: ROTATION_COMPLETE | Face: {current_face} | Direction: {'clock' if desired_direction > 0 else 'anti_clock'} | Index: {self.current_rotation_index-1} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° | Reward: +10.0 | Next: {next_face}_{'clock' if next_dir > 0 else 'anti_clock'}")
                         self.rotation_started = False
                         self.rotation_completed = False
                         self.initial_joint_angle = None
                         self.rotation_angle_accumulated = 0.0
+                        self.rotation_direction_actual = 0.0
+                        # Reset initial angles for all faces to track wrong rotations for next face
+                        self.face_initial_angles = {}
+                        for face_name in self.face_joint_ids.keys():
+                            self.face_initial_angles[face_name] = self._get_face_joint_angle(face_name)
                     else:
                         # Sequence completed! Give big bonus reward
                         reward += 50.0
                         sequence_key = "sequence_complete"
                         if sequence_key not in self.rotation_rewards_given:
                             self.rotation_rewards_given.add(sequence_key)
-                            # print(f"[ROTATION_REWARD] Case: SEQUENCE_COMPLETE | Face: {current_face} | Index: {self.current_rotation_index-1} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° | Reward: +10.0 (rotation) +50.0 (sequence) = +60.0 | TOTAL: {reward:.2f}")
+                            # print(f"[ROTATION_REWARD] Case: SEQUENCE_COMPLETE | Face: {current_face} | Direction: {'clock' if desired_direction > 0 else 'anti_clock'} | Index: {self.current_rotation_index-1} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° | Reward: +10.0 (rotation) +50.0 (sequence) = +60.0 | TOTAL: {reward:.2f}")
                         else:
                             pass
                             # print(f"[ROTATION_REWARD] Case: ROTATION_COMPLETE (sequence already rewarded) | Face: {current_face} | Index: {self.current_rotation_index-1} | Reward: +10.0")
-                else:
-                    # Small continuous reward for making progress
+                elif direction_correct:
+                    # Small continuous reward for making progress in correct direction
                     progress = self.rotation_angle_accumulated / self.rotation_complete_threshold
                     progress_reward = 0.1 * progress
                     reward += progress_reward
-                    # print(f"[ROTATION_REWARD] Case: ROTATION_PROGRESS | Face: {current_face} | Index: {self.current_rotation_index} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° / {np.degrees(self.rotation_complete_threshold):.1f}° | Progress: {progress*100:.1f}% | Reward: +{progress_reward:.3f}")
+                    # print(f"[ROTATION_REWARD] Case: ROTATION_PROGRESS | Face: {current_face} | Direction: {'clock' if desired_direction > 0 else 'anti_clock'} | Index: {self.current_rotation_index} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° / {np.degrees(self.rotation_complete_threshold):.1f}° | Progress: {progress*100:.1f}% | Reward: +{progress_reward:.3f}")
+                # else: rotating in wrong direction, no reward
+        
+        # Calculate penalty for wrong face rotations
+        # wrong_face_penalty = self._calculate_wrong_face_rotation_penalty(current_face)
+        # reward -= wrong_face_penalty
         
         return reward
+    
+    def _calculate_rotation_reward_v2(self) -> float:
+        """
+        Calculate reward for rotation sequence completion using continuous penalty approach.
+        Gives a continuous penalty based on how far the face rotation is from the desired 90-degree rotation.
+        
+        Returns:
+            Reward value (negative penalty) for rotation progress
+        """
+        # If no rotation sequence is set, return 0
+        if not self.rotation_sequence or self.current_rotation_index >= len(self.rotation_sequence):
+            return 0.0
+        
+        # Extract face name and desired direction from tuple
+        current_face, desired_direction = self.rotation_sequence[self.current_rotation_index]
+        
+        # Check if joint exists for this face
+        if current_face not in self.face_joint_ids:
+            return 0.0
+        
+        # Get current face joint state
+        current_joint_angle = self._get_face_joint_angle(current_face)
+        current_joint_velocity = self._get_face_joint_velocity(current_face)
+        contact_force = self._get_contact_forces()
+        force_magnitude = np.linalg.norm(contact_force)
+        
+        # Initialize reference angle when rotation starts
+        if not self.rotation_started:
+            # Rotation starts when there's significant joint angular velocity AND contact
+            if abs(current_joint_velocity) > self.rotation_start_threshold and force_magnitude > 0.5:
+                self.rotation_started = True
+                self.initial_joint_angle = current_joint_angle
+                self.rotation_angle_accumulated = 0.0
+                # Initialize angles for all faces to track wrong face rotations
+                if not self.face_initial_angles:
+                    for face_name in self.face_joint_ids.keys():
+                        self.face_initial_angles[face_name] = self._get_face_joint_angle(face_name)
+            else:
+                # No rotation started yet - return small penalty to encourage starting
+                return -0.1
+        
+        # If rotation has started, calculate continuous penalty
+        if self.rotation_started and not self.rotation_completed:
+            if self.initial_joint_angle is not None:
+                # Calculate the change in joint angle from initial position
+                angle_change = current_joint_angle - self.initial_joint_angle
+                
+                # Handle angle wrapping (joint angles can wrap around ±π)
+                # Normalize to [-π, π] range
+                while angle_change > np.pi:
+                    angle_change -= 2 * np.pi
+                while angle_change < -np.pi:
+                    angle_change += 2 * np.pi
+                
+                # Calculate rotation angle in the desired direction
+                target_angle = self.rotation_complete_threshold  # π/2 radians (90 degrees)
+                
+                # Determine if we're rotating in the correct direction
+                actual_direction = 1 if angle_change > 0 else -1 if angle_change < 0 else 0
+                is_correct_direction = (actual_direction == desired_direction) if actual_direction != 0 else False
+                
+                # Calculate the current rotation angle (absolute value)
+                rotation_angle = abs(angle_change)
+                
+                # Calculate distance from target (90 degrees)
+                if is_correct_direction:
+                    # Rotating in correct direction: distance is how far we are from 90 degrees
+                    distance_from_target = abs(target_angle - rotation_angle)
+                else:
+                    # Rotating in wrong direction: we need to reverse and then rotate 90 degrees
+                    # Distance = current rotation + target rotation = rotation_angle + target_angle
+                    distance_from_target = rotation_angle + target_angle
+                
+                # Continuous penalty: proportional to distance from target
+                # Penalty increases as we get further from 90 degrees
+                # Normalize by target_angle to get penalty in [0, 2] range (can be >1 if wrong direction)
+                normalized_distance = distance_from_target / target_angle
+                penalty = -normalized_distance  # Negative because it's a penalty
+                
+                # Check if rotation is complete (within small threshold of 90 degrees AND correct direction)
+                if rotation_angle >= target_angle * 0.95 and is_correct_direction:
+                    self.rotation_completed = True
+                    # Zero penalty for completion
+                    penalty = 0.0
+                    
+                    # Move to next rotation in sequence
+                    self.current_rotation_index += 1
+                    if self.current_rotation_index < len(self.rotation_sequence):
+                        # Reset for next rotation
+                        self.rotation_started = False
+                        self.rotation_completed = False
+                        self.initial_joint_angle = None
+                        self.rotation_angle_accumulated = 0.0
+                        self.rotation_direction_actual = 0.0
+                        # Reset initial angles for all faces
+                        self.face_initial_angles = {}
+                        for face_name in self.face_joint_ids.keys():
+                            self.face_initial_angles[face_name] = self._get_face_joint_angle(face_name)
+                
+                return penalty
+            else:
+                # Initial angle not set - return small penalty
+                return -0.1
+        elif self.rotation_completed:
+            # Rotation completed - no penalty
+            return 0.0
+        else:
+            # Rotation not started - small penalty to encourage starting
+            return -0.1
+    
+    def _calculate_wrong_face_rotation_penalty(self, current_target_face: str) -> float:
+        """
+        Calculate penalty for rotating faces other than the current target face.
+        Penalty is a continuous function of:
+        - Number of wrong faces being rotated
+        - Magnitude of rotation for each wrong face
+        
+        Args:
+            current_target_face: The face that should be rotated according to rotation sequence
+            
+        Returns:
+            Penalty value (positive number, will be subtracted from reward)
+        """
+        if not self.rotation_started:
+            # If rotation hasn't started, initialize angles for all faces
+            # This allows us to detect any rotation from the initial state
+            if not self.face_initial_angles:
+                for face_name in self.face_joint_ids.keys():
+                    self.face_initial_angles[face_name] = self._get_face_joint_angle(face_name)
+            return 0.0
+        
+        # If rotation has started, check all faces for unwanted rotation
+        total_penalty = 0.0
+        wrong_faces_rotated = []
+        
+        for face_name in self.face_joint_ids.keys():
+            # Skip the current target face (it's allowed to rotate)
+            if face_name == current_target_face:
+                continue
+            
+            # Get current and initial angles for this face
+            if face_name not in self.face_initial_angles:
+                # Initialize if not already stored
+                self.face_initial_angles[face_name] = self._get_face_joint_angle(face_name)
+                continue
+            
+            current_angle = self._get_face_joint_angle(face_name)
+            initial_angle = self.face_initial_angles[face_name]
+            
+            # Calculate rotation angle change
+            angle_change = current_angle - initial_angle
+            
+            # Handle angle wrapping (normalize to [-π, π] range)
+            while angle_change > np.pi:
+                angle_change -= 2 * np.pi
+            while angle_change < -np.pi:
+                angle_change += 2 * np.pi
+            
+            # Calculate absolute rotation magnitude
+            rotation_magnitude = abs(angle_change)
+            
+            # Only penalize if there's significant rotation (above noise threshold)
+            if rotation_magnitude > 0.05:  # ~3 degrees threshold to ignore noise
+                # Continuous penalty: proportional to rotation magnitude
+                # Penalty increases quadratically with rotation magnitude to strongly discourage large wrong rotations
+                face_penalty = self.wrong_face_rotation_penalty_coef * (rotation_magnitude ** 2)
+                total_penalty += face_penalty
+                wrong_faces_rotated.append((face_name, rotation_magnitude))
+        
+        # Additional penalty based on number of wrong faces rotated
+        # This encourages the agent to rotate only the target face
+        if len(wrong_faces_rotated) > 0:
+            num_penalty = 0.1 * len(wrong_faces_rotated)  # Small penalty per wrong face
+            total_penalty += num_penalty
+        
+        # Optional: Log wrong face rotations for debugging
+        # if wrong_faces_rotated:
+        #     print(f"[WRONG_FACE_PENALTY] Wrong faces rotated: {wrong_faces_rotated} | Total penalty: {total_penalty:.4f}")
+        
+        return total_penalty
     
     def _quaternion_inverse(self, q: np.ndarray) -> np.ndarray:
         """Compute inverse of quaternion (conjugate for unit quaternion)."""
@@ -893,26 +1116,54 @@ class RubiksCubeEnvironment:
         
         return np.array([w, x, y, z])
     
+    def _parse_rotation_sequence(self, sequence: List[str]):
+        """
+        Parse rotation sequence to extract face names and directions.
+        
+        Args:
+            sequence: List of rotation specifications (e.g., ['red_clock', 'blue_anti_clock', 'white'])
+                     Format: 'face_clock' for +90° clockwise, 'face_anti_clock' for -90° anti-clockwise
+                     Or just 'face' for backward compatibility (defaults to clockwise)
+        """
+        valid_faces = {'red', 'orange', 'blue', 'green', 'white', 'yellow'}
+        parsed_sequence = []
+        
+        for item in sequence:
+            item_lower = item.lower().strip()
+            
+            # Check for _clock or _anti_clock suffix
+            if item_lower.endswith('_clock'):
+                face = item_lower[:-6]  # Remove '_clock'
+                direction = 1  # +90 degrees clockwise
+            elif item_lower.endswith('_anti_clock'):
+                face = item_lower[:-11]  # Remove '_anti_clock'
+                direction = -1  # -90 degrees anti-clockwise
+            else:
+                # Backward compatibility: if no suffix, default to clockwise
+                face = item_lower
+                direction = 1  # Default to clockwise
+            
+            # Validate face name
+            if face in valid_faces:
+                parsed_sequence.append((face, direction))
+            else:
+                print(f"Warning: Invalid face name '{face}' in rotation sequence item '{item}'. Skipping.")
+        
+        self.rotation_sequence = parsed_sequence
+    
     def set_rotation_sequence(self, sequence: List[str]):
         """
         Set the rotation sequence for the episode.
         
         Args:
-            sequence: List of face names to rotate (e.g., ['red', 'blue', 'white'])
-                     Each face name should be one of: 'red', 'orange', 'blue', 'green', 'white', 'yellow'
+            sequence: List of rotation specifications (e.g., ['red_clock', 'blue_anti_clock', 'white'])
+                     Format: 'face_clock' for +90° clockwise, 'face_anti_clock' for -90° anti-clockwise
+                     Or just 'face' for backward compatibility (defaults to clockwise)
         """
         if sequence is None:
             self.rotation_sequence = []
         else:
-            # Validate face names
-            valid_faces = {'red', 'orange', 'blue', 'green', 'white', 'yellow'}
-            validated_sequence = []
-            for face in sequence:
-                if face.lower() in valid_faces:
-                    validated_sequence.append(face.lower())
-                else:
-                    print(f"Warning: Invalid face name '{face}' in rotation sequence. Skipping.")
-            self.rotation_sequence = validated_sequence
+            self._parse_rotation_sequence(sequence)
         
         # Reset rotation tracking
         self.current_rotation_index = 0
@@ -920,6 +1171,8 @@ class RubiksCubeEnvironment:
         self.rotation_completed = False
         self.initial_joint_angle = None
         self.rotation_angle_accumulated = 0.0
+        self.rotation_direction_actual = 0.0
+        self.face_initial_angles = {}
         self.rotation_rewards_given.clear()
     
     def _is_done(self) -> bool:
@@ -931,9 +1184,9 @@ class RubiksCubeEnvironment:
         
         # Cube dropped (fell too low)
         cube_pos = self._get_cube_position()
-        if cube_pos[2] < 0.05:  # Cube below 5cm
-            self.episode_info['termination_reason'] = 'cube_dropped'
-            return True
+        # if cube_pos[2] < 0.05:  # Cube below 5cm
+        #     self.episode_info['termination_reason'] = 'cube_dropped'
+        #     return True
         
         # Cube moved too far from workspace
         if np.linalg.norm(cube_pos[:2]) > self.workspace_radius:  # Cube moved too far from center
