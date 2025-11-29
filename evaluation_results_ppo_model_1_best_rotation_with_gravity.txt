@@ -1,0 +1,22 @@
+Evaluation Results
+==================
+
+Model: saved_models/ppo_model_1_best_rotation_with_gravity.pth
+Episodes: 10
+Deterministic: False
+
+Results:
+Average Reward: 22.67 ± 11.05
+Average Length: 432.00 ± 108.56
+
+Episode Details:
+Episode 1: Reward=28.36, Length=500
+Episode 2: Reward=26.27, Length=500
+Episode 3: Reward=23.54, Length=500
+Episode 4: Reward=14.12, Length=345
+Episode 5: Reward=28.50, Length=500
+Episode 6: Reward=6.15, Length=204
+Episode 7: Reward=30.90, Length=500
+Episode 8: Reward=38.42, Length=500
+Episode 9: Reward=28.80, Length=500
+Episode 10: Reward=1.68, Length=271

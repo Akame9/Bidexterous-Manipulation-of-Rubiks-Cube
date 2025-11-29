@@ -1,0 +1,17 @@
+Evaluation Results
+==================
+
+Model: saved_models/ppo_model_1_best_gravity.pth
+Episodes: 5
+Deterministic: False
+
+Results:
+Average Reward: 161.40 ± 100.89
+Average Length: 327.20 ± 89.34
+
+Episode Details:
+Episode 1: Reward=117.50, Length=263
+Episode 2: Reward=79.50, Length=268
+Episode 3: Reward=359.50, Length=500
+Episode 4: Reward=139.50, Length=327
+Episode 5: Reward=111.00, Length=278
