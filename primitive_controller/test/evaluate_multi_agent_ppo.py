@@ -1,6 +1,6 @@
 """
-Evaluation script for trained PPO agent on bidexhands Rubik's cube manipulation.
-This script loads a trained model and evaluates it with the MuJoCo viewer.
+Evaluation script for trained Multi-Agent PPO on bidexhands Rubik's cube manipulation.
+This script loads a trained multi-agent model and evaluates it with the MuJoCo viewer.
 """
 
 import os
@@ -12,27 +12,28 @@ import time
 import mujoco as mj
 import cv2
 
-# Add current directory to path for imports
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Add parent directories to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from primitive_controller.ppo import PPOAgent, get_device, print_gpu_info
+from primitive_controller.multi_agent_ppo import MultiAgentPPO
+from primitive_controller.ppo import get_device, print_gpu_info
 from environment.rubiks_cube import RubiksCubeEnvironment
 
 
-def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, deterministic=True,
+def evaluate_agent(env, multi_agent, num_episodes=10, max_steps=1000, render=True, deterministic=True,
                    save_video=False, video_dir="videos", video_fps=30, video_width=640, video_height=480):
     """
-    Evaluate the trained agent.
+    Evaluate the trained multi-agent.
     
     Args:
         env: Environment instance
-        agent: PPO agent
+        multi_agent: MultiAgentPPO instance
         num_episodes: Number of evaluation episodes
         max_steps: Maximum steps per episode
         render: Whether to render the environment
         deterministic: Whether to use deterministic policy
     """
-    print(f"\nEvaluating agent for {num_episodes} episodes...")
+    print(f"\nEvaluating multi-agent for {num_episodes} episodes...")
     print(f"Deterministic policy: {deterministic}")
     print(f"Rendering: {render}")
     
@@ -67,11 +68,14 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, det
         print(f"{'='*60}")
         
         for step in range(max_steps):
-            # Use deterministic policy for evaluation
-            action, _, _ = agent.select_action(state, deterministic=deterministic)
+            # Select actions for both hands using deterministic policy
+            left_action, right_action, _, _, _, _ = multi_agent.select_actions(state, deterministic=deterministic)
+            
+            # Combine actions (left hand actions + right hand actions)
+            combined_action = np.concatenate([left_action, right_action])
             
             # Take step
-            next_state, reward, done, info = env.take_step(action)
+            next_state, reward, done, info = env.take_step(combined_action)
             
             # Track specific reward values
             if abs(reward - 2.0) < 1e-6:  # Check for exactly 2.0
@@ -163,10 +167,10 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, det
 
 def main():
     """Main evaluation function."""
-    parser = argparse.ArgumentParser(description='Evaluate trained PPO agent on Rubik\'s Cube environment')
+    parser = argparse.ArgumentParser(description='Evaluate trained Multi-Agent PPO on Rubik\'s Cube environment')
     
     # Model arguments
-    parser.add_argument('--model_path', type=str, default='saved_models/ppo_model_best.pth',
+    parser.add_argument('--model_path', type=str, default='saved_models/multi_agent_ppo_model_best.pth',
                        help='Path to trained model')
     
     # Environment arguments
@@ -220,14 +224,26 @@ def main():
                        help='Max grad norm (must match training)')
     parser.add_argument('--batch_size', type=int, default=64,
                        help='Batch size (must match training)')
+    parser.add_argument('--high_reward_threshold', type=float, default=1.5,
+                       help='Reward threshold for high-reward prioritization (must match training)')
+    parser.add_argument('--clip_vloss', action='store_true', default=True,
+                       help='Use clipped value loss (must match training)')
+    parser.add_argument('--no_clip_vloss', dest='clip_vloss', action='store_false',
+                       help='Disable clipped value loss')
+    parser.add_argument('--value_clip_coef', type=float, default=0.2,
+                       help='Value clipping coefficient (must match training)')
+    parser.add_argument('--value_loss_mode', type=str, default='min', choices=['max', 'min', 'mean'],
+                       help='Value loss mode (must match training)')
+    parser.add_argument('--target_kl', type=float, default=0.01,
+                       help='Target KL divergence for early stopping (must match training)')
+    parser.add_argument('--early_stop_kl', action='store_true', default=False,
+                       help='Enable early stopping based on KL divergence (must match training)')
     
     # Device arguments
     parser.add_argument('--device', type=str, default='auto',
                        help='Device (auto, cpu, cuda, cuda:0, etc.)')
     parser.add_argument('--gpu_id', type=int, default=0,
                        help='GPU ID to use')
-    parser.add_argument('--rotation_sequence', type=str, default=None,
-                       help='Comma-separated list of face names to rotate (e.g., "red,blue,white")')
     
     args = parser.parse_args()
     
@@ -269,16 +285,19 @@ def main():
     
     # Get state and action dimensions
     state_dim = env.state_dim
-    action_dim = env.action_dim
+    left_action_dim = len(env.left_hand_actuators)
+    right_action_dim = len(env.right_hand_actuators)
     
     print(f"State dimension: {state_dim}")
-    print(f"Action dimension: {action_dim}")
+    print(f"Left hand action dimension: {left_action_dim}")
+    print(f"Right hand action dimension: {right_action_dim}")
     
-    # Create PPO agent
-    print("\nCreating PPO agent...")
-    agent = PPOAgent(
+    # Create Multi-Agent PPO
+    print("\nCreating Multi-Agent PPO...")
+    multi_agent = MultiAgentPPO(
         state_dim=state_dim,
-        action_dim=action_dim,
+        left_action_dim=left_action_dim,
+        right_action_dim=right_action_dim,
         lr=args.lr,
         gamma=args.gamma,
         eps_clip=args.eps_clip,
@@ -287,21 +306,28 @@ def main():
         value_coef=args.value_coef,
         max_grad_norm=args.max_grad_norm,
         device=device,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        high_reward_threshold=args.high_reward_threshold,
+        clip_vloss=args.clip_vloss,
+        value_clip_coef=args.value_clip_coef,
+        value_loss_mode=args.value_loss_mode,
+        target_kl=args.target_kl,
+        early_stop_kl=args.early_stop_kl,
     )
     
     # Load trained model
     print(f"\nLoading trained model from {args.model_path}...")
-    agent.load_model(args.model_path)
+    multi_agent.load_model(args.model_path)
     
-    # Set model to evaluation mode
-    agent.policy.eval()
+    # Set models to evaluation mode
+    multi_agent.left_agent.policy.eval()
+    multi_agent.right_agent.policy.eval()
     
     # Evaluate
     try:
         results = evaluate_agent(
             env=env,
-            agent=agent,
+            multi_agent=multi_agent,
             num_episodes=args.num_episodes,
             max_steps=args.max_steps,
             render=args.enable_viewer,
