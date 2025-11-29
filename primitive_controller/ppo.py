@@ -257,6 +257,11 @@ class PPOAgent:
         # Track best reward for saving best model
         self.best_reward = float('-inf')
         
+        # Track high-reward models (reward > 310) - keep last 10
+        self.high_reward_models = []  # List of (episode, reward, filepath) tuples
+        self.high_reward_threshold = 310.0
+        self.max_high_reward_models = 10
+        
         # Track consecutive NaN occurrences
         self.nan_count = 0
         self.max_nan_count = 5  # Reset model after 5 consecutive NaN occurrences
@@ -903,9 +908,10 @@ class PPOAgent:
         }, filepath)
         print(f"Model saved to {filepath}")
     
-    def save_best_model(self, reward, filepath):
+    def save_best_model(self, reward, filepath, episode=None):
         """Save model only if it achieves a new best reward."""
         if reward > self.best_reward:
+            previous_best = self.best_reward
             self.best_reward = reward
             torch.save({
                 'policy_state_dict': self.policy.state_dict(),
@@ -913,7 +919,52 @@ class PPOAgent:
                 'training_stats': self.training_stats,
                 'best_reward': self.best_reward
             }, filepath)
-            print(f"New best model saved! Reward: {reward:.2f} (Previous best: {self.best_reward:.2f})")
+            episode_str = f" at Episode {episode}" if episode is not None else ""
+            print(f"New best model saved{episode_str}! Reward: {reward:.2f} (Previous best: {previous_best:.2f})")
+            return True
+        return False
+    
+    def save_high_reward_model(self, reward, episode, base_model_path, save_dir="saved_last_10"):
+        """
+        Save model if reward > 310, keeping only the last 10 models.
+        
+        Args:
+            reward: Current episode reward (or average reward)
+            episode: Current episode number
+            base_model_path: Base path for model (used to generate filename)
+            save_dir: Directory to save high-reward models (default: "saved_last_10")
+        """
+        if reward > self.high_reward_threshold:
+            # Create directory if it doesn't exist
+            os.makedirs(save_dir, exist_ok=True)
+            
+            # Generate filename
+            model_name = os.path.basename(base_model_path).rsplit('.', 1)[0] if '.' in base_model_path else os.path.basename(base_model_path)
+            filename = f"{model_name}_ep{episode}_reward{reward:.2f}.pth"
+            filepath = os.path.join(save_dir, filename)
+            
+            # Save the model
+            torch.save({
+                'policy_state_dict': self.policy.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'training_stats': self.training_stats,
+                'episode': episode,
+                'reward': reward
+            }, filepath)
+            
+            # Add to list
+            self.high_reward_models.append((episode, reward, filepath))
+            
+            # Keep only the last 10 models
+            if len(self.high_reward_models) > self.max_high_reward_models:
+                # Remove the oldest model (first in list)
+                old_episode, old_reward, old_filepath = self.high_reward_models.pop(0)
+                # Delete the old file
+                if os.path.exists(old_filepath):
+                    os.remove(old_filepath)
+                    print(f"Removed old high-reward model: Episode {old_episode}, Reward {old_reward:.2f}")
+            
+            print(f"High-reward model saved! Episode {episode}, Reward: {reward:.2f} (Saved to {filepath}, Total saved: {len(self.high_reward_models)})")
             return True
         return False
     
@@ -1035,7 +1086,8 @@ class PPOMemory:
 
 def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500, 
                    save_interval=100, model_path="ppo_model.pth", save_best_only=False,
-                   episodes_per_update=4, min_buffer_size=200):
+                   episodes_per_update=4, min_buffer_size=200, save_best_after_episode=0,
+                   save_final_model=True, save_high_reward_after_episode=0):
     """
     Train PPO agent on the environment.
     
@@ -1049,6 +1101,9 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
         save_best_only: If True, only save the best model (overwrites previous best)
         episodes_per_update: Number of episodes to accumulate before updating (default: 4)
         min_buffer_size: Minimum number of transitions before updating (default: 200)
+        save_best_after_episode: Start saving best model only after this episode number (default: 0)
+        save_final_model: Whether to save the final model after training completes (default: True)
+        save_high_reward_after_episode: Start saving high-reward models (reward > 310) after this episode number (default: 0)
     """
     print("Starting PPO training...")
     if _WANDB_AVAILABLE and wandb.run is not None:
@@ -1154,21 +1209,57 @@ def train_ppo_agent(env, agent, num_episodes=1000, max_steps=500,
                   f"High-Reward Samples: {high_reward_count}")
         
         if save_best_only:
-                # Create proper filename: replace .pth with _best.pth
-                model_name = model_path.rsplit('.', 1)[0] if '.' in model_path else model_path
-                best_model_path = f"{model_name}_best.pth"
-                best_model_saved = agent.save_best_model(avg_reward, best_model_path)
-                if best_model_saved and _WANDB_AVAILABLE and wandb.run is not None:
-                    wandb.save(best_model_path)
+                # Only save best model after the specified episode number
+                if episode >= save_best_after_episode:
+                    # Create proper filename: replace .pth with _best.pth
+                    model_name = model_path.rsplit('.', 1)[0] if '.' in model_path else model_path
+                    best_model_path = f"{model_name}_best.pth"
+                    # Use average reward (last 10 episodes) for best model saving
+                    if len(agent.training_stats['episode_rewards']) >= 10:
+                        avg_reward = np.mean(agent.training_stats['episode_rewards'][-10:])
+                        best_model_saved = agent.save_best_model(avg_reward, best_model_path, episode=episode)
+                    else:
+                        # If less than 10 episodes, use current episode reward
+                        best_model_saved = agent.save_best_model(episode_reward, best_model_path, episode=episode)
+                    if best_model_saved and _WANDB_AVAILABLE and wandb.run is not None:
+                        wandb.save(best_model_path)
         else:
                 agent.save_model(f"{model_path}_{episode}")
                 if _WANDB_AVAILABLE and wandb.run is not None:
                     wandb.save(f"{model_path}_{episode}")
+        
+        # Save high-reward models (reward > 310) after specified episode
+        # This is independent of save_best_only setting
+        if episode >= save_high_reward_after_episode:
+            # Use average reward if available, otherwise use episode reward
+            if len(agent.training_stats['episode_rewards']) >= 10:
+                avg_reward = np.mean(agent.training_stats['episode_rewards'][-10:])
+                agent.save_high_reward_model(avg_reward, episode, model_path)
+            else:
+                agent.save_high_reward_model(episode_reward, episode, model_path)
     
     # Final update on remaining data
     if len(agent.memory.states) >= 32:
         print(f"Final update on remaining {len(agent.memory.states)} transitions")
         agent.update()
+    
+    # Save final model if requested
+    if save_final_model:
+        # Create saved_final_models directory if it doesn't exist
+        final_models_dir = "saved_final_models"
+        os.makedirs(final_models_dir, exist_ok=True)
+        
+        # Extract model name from model_path (without extension)
+        model_name = model_path.rsplit('.', 1)[0] if '.' in model_path else model_path
+        # Remove directory path if present, keep only filename
+        model_basename = os.path.basename(model_name)
+        final_model_path = os.path.join(final_models_dir, f"{model_basename}_final.pth")
+        
+        agent.save_model(final_model_path)
+        print(f"Final model saved to {final_model_path}")
+        
+        if _WANDB_AVAILABLE and wandb.run is not None:
+            wandb.save(final_model_path)
     
     print("Training completed!")
 
@@ -1209,6 +1300,9 @@ if __name__ == "__main__":
     parser.add_argument('--high_reward_threshold', type=float, default=1.5, help='Reward threshold for high-reward experience prioritization')
     parser.add_argument('--episodes_per_update', type=int, default=4, help='Number of episodes to accumulate before updating (reduces zig-zag pattern)')
     parser.add_argument('--min_buffer_size', type=int, default=500, help='Minimum number of transitions before updating (reduces zig-zag pattern)')
+    parser.add_argument('--save_best_after_episode', type=int, default=0, help='Start saving best model only after this episode number (default: 0, saves from start)')
+    parser.add_argument('--save_high_reward_after_episode', type=int, default=0, help='Start saving high-reward models (reward > 310) after this episode number (default: 0, saves from start)')
+    parser.add_argument('--save_final_model', action='store_true', default=True, help='Save the final model after training completes in saved_final_models directory (default: True)')
     parser.add_argument('--project', type=str, default='mujoco-rubiks-ppo', help='wandb project name')
     parser.add_argument('--run_name', type=str, default=None, help='wandb run name')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
@@ -1264,6 +1358,7 @@ if __name__ == "__main__":
         visualize_collision_boxes=args.visualize_collision_boxes,
         enable_gravity=args.enable_gravity,
         rotation_sequence=rotation_sequence,
+        max_episode_steps=args.max_steps
     )
 
     # Instantiate agent
@@ -1304,6 +1399,9 @@ if __name__ == "__main__":
             save_best_only=args.save_best_only,
             episodes_per_update=args.episodes_per_update,
             min_buffer_size=args.min_buffer_size,
+            save_best_after_episode=args.save_best_after_episode,
+            save_final_model=args.save_final_model,
+            save_high_reward_after_episode=args.save_high_reward_after_episode,
         )
     finally:
         env.close()

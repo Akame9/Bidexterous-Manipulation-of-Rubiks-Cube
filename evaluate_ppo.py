@@ -224,6 +224,8 @@ def main():
                        help='Device (auto, cpu, cuda, cuda:0, etc.)')
     parser.add_argument('--gpu_id', type=int, default=0,
                        help='GPU ID to use')
+    parser.add_argument('--rotation_sequence', type=str, default=None,
+                       help='Comma-separated list of face names to rotate (e.g., "red,blue,white")')
     
     args = parser.parse_args()
     
@@ -235,6 +237,10 @@ def main():
     if args.stochastic:
         args.deterministic = False
     
+    rotation_sequence = None
+    if args.rotation_sequence:
+        rotation_sequence = [face.strip() for face in args.rotation_sequence.split(',')]
+        print(f"Rotation sequence: {rotation_sequence}")
     # Check if model exists
     if not os.path.exists(args.model_path):
         print(f"Error: Model file not found at {args.model_path}")
@@ -253,7 +259,8 @@ def main():
         xml_path=args.xml,
         max_episode_steps=args.max_steps,
         enable_viewer=args.enable_viewer,
-        visualize_collision_boxes=args.visualize_collision_boxes
+        visualize_collision_boxes=args.visualize_collision_boxes,
+        rotation_sequence=rotation_sequence
     )
     
     # Get state and action dimensions
