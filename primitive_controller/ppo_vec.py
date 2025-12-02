@@ -103,6 +103,7 @@ class OptimizedPPOMemory:
             self.dones = np.zeros(max_size, dtype=bool)
             self.log_probs = np.zeros(max_size, dtype=np.float32)
             self.values = np.zeros(max_size, dtype=np.float32)
+            self.env_ids = np.zeros(max_size, dtype=np.int32)  # Track which environment each transition belongs to
             self.use_preallocated = True
         else:
             # Fallback to lists if dimensions unknown
@@ -113,13 +114,14 @@ class OptimizedPPOMemory:
             self.dones = []
             self.log_probs = []
             self.values = []
+            self.env_ids = []
             self.use_preallocated = False
         
         self.idx = 0
         self.size = 0
     
-    def store(self, state, action, reward, next_state, done, log_prob, value):
-        """Store a transition."""
+    def store(self, state, action, reward, next_state, done, log_prob, value, env_id=0):
+        """Store a transition with environment ID."""
         if self.use_preallocated:
             idx = self.idx % self.max_size
             self.states[idx] = state
@@ -129,6 +131,7 @@ class OptimizedPPOMemory:
             self.dones[idx] = done
             self.log_probs[idx] = log_prob
             self.values[idx] = value
+            self.env_ids[idx] = env_id
             
             if reward >= self.high_reward_threshold:
                 self.high_reward_indices.append(idx)
@@ -144,6 +147,7 @@ class OptimizedPPOMemory:
             self.dones.append(done)
             self.log_probs.append(log_prob)
             self.values.append(value)
+            self.env_ids.append(env_id)
             
             if reward >= self.high_reward_threshold:
                 self.high_reward_indices.append(len(self.states) - 1)
@@ -156,6 +160,7 @@ class OptimizedPPOMemory:
                 self.dones.pop(0)
                 self.log_probs.pop(0)
                 self.values.pop(0)
+                self.env_ids.pop(0)
                 self.high_reward_indices = [idx - 1 for idx in self.high_reward_indices if idx > 0]
     
     def get_data(self):
@@ -170,7 +175,8 @@ class OptimizedPPOMemory:
                     'next_states': self.next_states[:self.size],
                     'dones': self.dones[:self.size],
                     'log_probs': self.log_probs[:self.size],
-                    'values': self.values[:self.size]
+                    'values': self.values[:self.size],
+                    'env_ids': self.env_ids[:self.size]
                 }
             else:
                 # Circular buffer - return in order
@@ -182,7 +188,8 @@ class OptimizedPPOMemory:
                     'next_states': self.next_states[indices],
                     'dones': self.dones[indices],
                     'log_probs': self.log_probs[indices],
-                    'values': self.values[indices]
+                    'values': self.values[indices],
+                    'env_ids': self.env_ids[indices]
                 }
         else:
             return {
@@ -192,7 +199,8 @@ class OptimizedPPOMemory:
                 'next_states': np.array(self.next_states),
                 'dones': np.array(self.dones),
                 'log_probs': np.array(self.log_probs),
-                'values': np.array(self.values)
+                'values': np.array(self.values),
+                'env_ids': np.array(self.env_ids)
             }
     
     def clear(self):
@@ -210,6 +218,7 @@ class OptimizedPPOMemory:
             self.dones.clear()
             self.log_probs.clear()
             self.values.clear()
+            self.env_ids.clear()
             self.high_reward_indices.clear()
     
     def __len__(self):
@@ -382,52 +391,177 @@ class PPOAgentVec:
                     values.cpu().numpy().flatten()
                 )
     
-    def store_transition(self, state, action, reward, next_state, done, log_prob, value):
+    def store_transition(self, state, action, reward, next_state, done, log_prob, value, env_id=0):
         """Store transition in memory."""
-        self.memory.store(state, action, reward, next_state, done, log_prob, value)
+        self.memory.store(state, action, reward, next_state, done, log_prob, value, env_id)
     
-    def compute_gae_vectorized(self, rewards, values, dones, next_states=None, lam=0.95):
+    def compute_gae_vectorized(self, rewards, values, dones, next_states=None, env_ids=None, lam=0.95):
         """
-        Vectorized GAE computation using cumulative sum instead of Python loop.
+        Vectorized GAE computation that handles per-episode trajectories correctly.
         
-        This is much faster than the loop-based implementation.
+        This correctly computes GAE for vectorized environments where transitions from
+        different environments are interleaved. It groups transitions by environment
+        and episode, then computes GAE separately for each episode.
         """
         # Ensure tensors are the right shape
         rewards = rewards.view(-1)
         values = values.view(-1)
         dones = dones.view(-1)
         
-        # Compute next values
-        if next_states is not None and len(next_states) > 0:
-            with torch.no_grad():
-                _, _, last_next_value = self.policy.forward(next_states[-1:])
-                last_next_value = last_next_value.squeeze().unsqueeze(0).to(values.device)
-        else:
-            last_next_value = torch.zeros(1, device=values.device)
+        # If env_ids not provided, assume all transitions are from one episode (backward compatibility)
+        if env_ids is None:
+            # Fall back to original computation (treating all as one sequence)
+            if next_states is not None and len(next_states) > 0:
+                with torch.no_grad():
+                    _, _, last_next_value = self.policy.forward(next_states[-1:])
+                    last_next_value = last_next_value.squeeze().unsqueeze(0).to(values.device)
+            else:
+                last_next_value = torch.zeros(1, device=values.device)
+            
+            next_values = torch.cat([values[1:], last_next_value])
+            td_errors = rewards + self.gamma * next_values * (~dones).float() - values
+            
+            # Compute GAE using loop (for single episode)
+            advantages = []
+            advantage = torch.tensor(0.0, device=td_errors.device)
+            gamma_lambda = self.gamma * lam
+            for i in reversed(range(len(td_errors))):
+                advantage = td_errors[i] + gamma_lambda * (~dones[i]).float() * advantage
+                advantages.insert(0, advantage)
+            
+            advantages = torch.stack(advantages)
+            returns = advantages + values
+            returns = returns.view(-1, 1)
+            return advantages, returns
         
-        # AATHIRA : Check if the next values are correct.
-        next_values = torch.cat([values[1:], last_next_value])
+        # Convert env_ids to tensor if needed
+        if isinstance(env_ids, np.ndarray):
+            env_ids = torch.from_numpy(env_ids).to(values.device)
+        env_ids = env_ids.view(-1)
         
-        # Compute TD errors
-        td_errors = rewards + self.gamma * next_values * (~dones).float() - values
+        # Initialize output arrays to maintain original order
+        advantages = torch.zeros_like(values)
+        returns = torch.zeros_like(values)
         
-        # Vectorized GAE computation using cumulative sum
-        # Reverse the sequence for backward pass
-        td_errors_reversed = torch.flip(td_errors, [0])
-        dones_reversed = torch.flip(dones, [0])
+        # Group transitions by environment and compute GAE per episode
+        unique_env_ids = torch.unique(env_ids)
         
-        # Compute advantages using cumulative sum
-        advantages_reversed = []
-        advantage = torch.tensor(0.0, device=td_errors.device)
-        
-        # Use vectorized computation
-        gamma_lambda = self.gamma * lam
-        for i in range(len(td_errors_reversed)):
-            advantage = td_errors_reversed[i] + gamma_lambda * (~dones_reversed[i]).float() * advantage
-            advantages_reversed.append(advantage)
-        
-        advantages = torch.flip(torch.stack(advantages_reversed), [0])
-        returns = advantages + values
+        for env_id in unique_env_ids:
+            # Get indices for this environment (in original order)
+            print(f"Group transitions by environment env_id: {env_id}")
+            env_mask = (env_ids == env_id)
+            env_indices = torch.where(env_mask)[0]
+            
+            if len(env_indices) == 0:
+                continue
+            
+            # Get data for this environment
+            env_rewards = rewards[env_indices]
+            env_values = values[env_indices]
+            env_dones = dones[env_indices]
+            
+            # Find episode boundaries (where done=True) within this environment's transitions
+            done_mask = env_dones
+            done_positions = torch.where(done_mask)[0]  # Positions within env_indices, not global indices
+            
+            # Process each episode separately
+            episode_start = 0
+            for done_pos in done_positions:
+                # Get episode data (inclusive of done step)
+                episode_local_indices = torch.arange(episode_start, done_pos + 1, device=env_indices.device)
+                episode_global_indices = env_indices[episode_local_indices]  # Original indices
+                
+                episode_rewards = rewards[episode_global_indices]
+                episode_values = values[episode_global_indices]
+                episode_dones = dones[episode_global_indices]
+                
+                # Compute next values for this episode
+                if len(episode_global_indices) > 0:
+                    # Get next state for last transition in episode
+                    episode_next_states = None
+                    if next_states is not None and len(next_states) > 0:
+                        last_idx = episode_global_indices[-1].item()
+                        if last_idx < len(next_states):
+                            episode_next_states = next_states[last_idx:last_idx+1]
+                    
+                    if episode_next_states is not None:
+                        with torch.no_grad():
+                            _, _, last_next_value = self.policy.forward(episode_next_states)
+                            last_next_value = last_next_value.squeeze().unsqueeze(0).to(values.device)
+                    else:
+                        last_next_value = torch.zeros(1, device=values.device)
+                    
+                    # Compute TD errors for this episode
+                    if len(episode_values) > 1:
+                        episode_next_values = torch.cat([episode_values[1:], last_next_value])
+                    else:
+                        episode_next_values = last_next_value
+                    
+                    episode_td_errors = episode_rewards + self.gamma * episode_next_values * (~episode_dones).float() - episode_values
+                    
+                    # Compute GAE for this episode
+                    episode_advantages = []
+                    advantage = torch.tensor(0.0, device=episode_td_errors.device)
+                    gamma_lambda = self.gamma * lam
+                    for i in reversed(range(len(episode_td_errors))):
+                        advantage = episode_td_errors[i] + gamma_lambda * (~episode_dones[i]).float() * advantage
+                        episode_advantages.insert(0, advantage)
+                    
+                    episode_advantages = torch.stack(episode_advantages)
+                    episode_returns = episode_advantages + episode_values
+                    
+                    # Store results at original indices
+                    advantages[episode_global_indices] = episode_advantages
+                    returns[episode_global_indices] = episode_returns
+                
+                episode_start = done_pos + 1
+            
+            # Handle remaining transitions if episode didn't end
+            if episode_start < len(env_indices):
+                print(f"Remaining transitions: {len(env_indices) - episode_start}")
+                remaining_local_indices = torch.arange(episode_start, len(env_indices), device=env_indices.device)
+                remaining_global_indices = env_indices[remaining_local_indices]
+                
+                remaining_rewards = rewards[remaining_global_indices]
+                remaining_values = values[remaining_global_indices]
+                remaining_dones = dones[remaining_global_indices]
+                
+                # Get next state for last transition
+                remaining_next_states = None
+                if next_states is not None and len(next_states) > 0:
+                    last_idx = remaining_global_indices[-1].item()
+                    if last_idx < len(next_states):
+                        remaining_next_states = next_states[last_idx:last_idx+1]
+                
+                if remaining_next_states is not None:
+                    with torch.no_grad():
+                        _, _, last_next_value = self.policy.forward(remaining_next_states)
+                        last_next_value = last_next_value.squeeze().unsqueeze(0).to(values.device)
+                else:
+                    last_next_value = torch.zeros(1, device=values.device)
+                
+                # Compute TD errors
+                if len(remaining_values) > 1:
+                    remaining_next_values = torch.cat([remaining_values[1:], last_next_value])
+                else:
+                    remaining_next_values = last_next_value
+                
+                remaining_td_errors = remaining_rewards + self.gamma * remaining_next_values * (~remaining_dones).float() - remaining_values
+                
+                # Compute GAE
+                remaining_advantages = []
+                advantage = torch.tensor(0.0, device=remaining_td_errors.device)
+                gamma_lambda = self.gamma * lam
+                for i in reversed(range(len(remaining_td_errors))):
+                    advantage = remaining_td_errors[i] + gamma_lambda * (~remaining_dones[i]).float() * advantage
+                    remaining_advantages.insert(0, advantage)
+                
+                remaining_advantages = torch.stack(remaining_advantages)
+                remaining_returns = remaining_advantages + remaining_values
+                
+                # Store results at original indices
+                advantages[remaining_global_indices] = remaining_advantages
+                returns[remaining_global_indices] = remaining_returns
         
         # Ensure returns has the same shape as policy network output [batch_size, 1]
         returns = returns.view(-1, 1)
@@ -451,9 +585,10 @@ class PPOAgentVec:
         dones = torch.BoolTensor(data['dones']).to(self.device)
         old_log_probs = torch.FloatTensor(data['log_probs']).to(self.device)
         old_values = torch.FloatTensor(data['values']).to(self.device).view(-1, 1)
+        env_ids = data.get('env_ids', None)
         
-        # Compute advantages and returns (vectorized)
-        advantages, returns = self.compute_gae_vectorized(rewards, old_values, dones, next_states)
+        # Compute advantages and returns (vectorized, with proper per-episode handling)
+        advantages, returns = self.compute_gae_vectorized(rewards, old_values, dones, next_states, env_ids)
         
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -916,7 +1051,8 @@ def train_ppo_agent_vec(env_fn, agent, num_episodes=1000, max_steps=500,
                             next_states[i],
                             dones[i],
                             log_probs[i],
-                            values[i]
+                            values[i],
+                            env_id=i  # Track which environment this transition belongs to
                         )
                         transitions_stored += 1
                     else:
@@ -965,6 +1101,7 @@ def train_ppo_agent_vec(env_fn, agent, num_episodes=1000, max_steps=500,
             if _WANDB_AVAILABLE and wandb.run is not None:
                 # Log the last num_envs episodes
                 num_episodes_to_log = min(num_envs, len(agent.training_stats['episode_rewards']))
+                # print(f"num_episodes_to_log: {num_episodes_to_log}")
                 if num_episodes_to_log > 0:
                     # Get the last num_envs episodes
                     start_idx = len(agent.training_stats['episode_rewards']) - num_episodes_to_log
@@ -1057,7 +1194,7 @@ def train_ppo_agent_vec(env_fn, agent, num_episodes=1000, max_steps=500,
                 action, log_prob, value = agent.select_action(state)
                 next_state, reward, done, info = env.take_step(action)
                 
-                agent.store_transition(state, action, reward, next_state, done, log_prob, value)
+                agent.store_transition(state, action, reward, next_state, done, log_prob, value, env_id=0)
                 
                 state = next_state
                 episode_reward += reward
