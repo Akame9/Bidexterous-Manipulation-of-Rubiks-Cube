@@ -1301,7 +1301,7 @@ if __name__ == "__main__":
     parser.add_argument('--episodes_per_update', type=int, default=4, help='Number of episodes to accumulate before updating (reduces zig-zag pattern)')
     parser.add_argument('--min_buffer_size', type=int, default=500, help='Minimum number of transitions before updating (reduces zig-zag pattern)')
     parser.add_argument('--save_best_after_episode', type=int, default=0, help='Start saving best model only after this episode number (default: 0, saves from start)')
-    parser.add_argument('--save_high_reward_after_episode', type=int, default=0, help='Start saving high-reward models (reward > 310) after this episode number (default: 0, saves from start)')
+    parser.add_argument('--save_high_reward_after_episode', type=int, default=90000, help='Start saving high-reward models (reward > 310) after this episode number (default: 0, saves from start)')
     parser.add_argument('--save_final_model', action='store_true', default=True, help='Save the final model after training completes in saved_final_models directory (default: True)')
     parser.add_argument('--project', type=str, default='mujoco-rubiks-ppo', help='wandb project name')
     parser.add_argument('--run_name', type=str, default=None, help='wandb run name')

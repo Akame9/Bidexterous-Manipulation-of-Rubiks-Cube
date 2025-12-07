@@ -408,62 +408,31 @@ class PPOAgentVec:
         values = values.view(-1)
         dones = dones.view(-1)
         
-        # If env_ids not provided, assume all transitions are from one episode (backward compatibility)
-        if env_ids is None:
-            # Fall back to original computation (treating all as one sequence)
-            if next_states is not None and len(next_states) > 0:
-                with torch.no_grad():
-                    _, _, last_next_value = self.policy.forward(next_states[-1:])
-                    last_next_value = last_next_value.squeeze().unsqueeze(0).to(values.device)
-            else:
-                last_next_value = torch.zeros(1, device=values.device)
-            
-            next_values = torch.cat([values[1:], last_next_value])
-            td_errors = rewards + self.gamma * next_values * (~dones).float() - values
-            
-            # Compute GAE using loop (for single episode)
-            advantages = []
-            advantage = torch.tensor(0.0, device=td_errors.device)
-            gamma_lambda = self.gamma * lam
-            for i in reversed(range(len(td_errors))):
-                advantage = td_errors[i] + gamma_lambda * (~dones[i]).float() * advantage
-                advantages.insert(0, advantage)
-            
-            advantages = torch.stack(advantages)
-            returns = advantages + values
-            returns = returns.view(-1, 1)
-            return advantages, returns
-        
-        # Convert env_ids to tensor if needed
         if isinstance(env_ids, np.ndarray):
             env_ids = torch.from_numpy(env_ids).to(values.device)
         env_ids = env_ids.view(-1)
         
-        # Initialize output arrays to maintain original order
         advantages = torch.zeros_like(values)
         returns = torch.zeros_like(values)
         
         # Group transitions by environment and compute GAE per episode
         unique_env_ids = torch.unique(env_ids)
-        
+        # print(f"Unique env_ids: {unique_env_ids}")
         for env_id in unique_env_ids:
-            # Get indices for this environment (in original order)
-            print(f"Group transitions by environment env_id: {env_id}")
+            # print(f"Group transitions by environment env_id: {env_id}")
             env_mask = (env_ids == env_id)
             env_indices = torch.where(env_mask)[0]
             
             if len(env_indices) == 0:
                 continue
             
-            # Get data for this environment
             env_rewards = rewards[env_indices]
             env_values = values[env_indices]
             env_dones = dones[env_indices]
             
-            # Find episode boundaries (where done=True) within this environment's transitions
             done_mask = env_dones
             done_positions = torch.where(done_mask)[0]  # Positions within env_indices, not global indices
-            
+            print(f"Done positions: {done_positions}")
             # Process each episode separately
             episode_start = 0
             for done_pos in done_positions:
@@ -516,54 +485,6 @@ class PPOAgentVec:
                 
                 episode_start = done_pos + 1
             
-            # Handle remaining transitions if episode didn't end
-            if episode_start < len(env_indices):
-                print(f"Remaining transitions: {len(env_indices) - episode_start}")
-                remaining_local_indices = torch.arange(episode_start, len(env_indices), device=env_indices.device)
-                remaining_global_indices = env_indices[remaining_local_indices]
-                
-                remaining_rewards = rewards[remaining_global_indices]
-                remaining_values = values[remaining_global_indices]
-                remaining_dones = dones[remaining_global_indices]
-                
-                # Get next state for last transition
-                remaining_next_states = None
-                if next_states is not None and len(next_states) > 0:
-                    last_idx = remaining_global_indices[-1].item()
-                    if last_idx < len(next_states):
-                        remaining_next_states = next_states[last_idx:last_idx+1]
-                
-                if remaining_next_states is not None:
-                    with torch.no_grad():
-                        _, _, last_next_value = self.policy.forward(remaining_next_states)
-                        last_next_value = last_next_value.squeeze().unsqueeze(0).to(values.device)
-                else:
-                    last_next_value = torch.zeros(1, device=values.device)
-                
-                # Compute TD errors
-                if len(remaining_values) > 1:
-                    remaining_next_values = torch.cat([remaining_values[1:], last_next_value])
-                else:
-                    remaining_next_values = last_next_value
-                
-                remaining_td_errors = remaining_rewards + self.gamma * remaining_next_values * (~remaining_dones).float() - remaining_values
-                
-                # Compute GAE
-                remaining_advantages = []
-                advantage = torch.tensor(0.0, device=remaining_td_errors.device)
-                gamma_lambda = self.gamma * lam
-                for i in reversed(range(len(remaining_td_errors))):
-                    advantage = remaining_td_errors[i] + gamma_lambda * (~remaining_dones[i]).float() * advantage
-                    remaining_advantages.insert(0, advantage)
-                
-                remaining_advantages = torch.stack(remaining_advantages)
-                remaining_returns = remaining_advantages + remaining_values
-                
-                # Store results at original indices
-                advantages[remaining_global_indices] = remaining_advantages
-                returns[remaining_global_indices] = remaining_returns
-        
-        # Ensure returns has the same shape as policy network output [batch_size, 1]
         returns = returns.view(-1, 1)
         
         return advantages, returns
@@ -1287,7 +1208,7 @@ if __name__ == "__main__":
     parser.add_argument('--episodes_per_update', type=int, default=4, help='Number of episodes to accumulate before updating (reduces zig-zag pattern)')
     parser.add_argument('--min_buffer_size', type=int, default=500, help='Minimum number of transitions before updating (reduces zig-zag pattern)')
     parser.add_argument('--save_best_after_episode', type=int, default=0, help='Start saving best model only after this episode number (default: 0, saves from start)')
-    parser.add_argument('--save_high_reward_after_episode', type=int, default=0, help='Start saving high-reward models (reward > 310) after this episode number (default: 0, saves from start)')
+    parser.add_argument('--save_high_reward_after_episode', type=int, default=90000, help='Start saving high-reward models (reward > 310) after this episode number (default: 0, saves from start)')
     parser.add_argument('--save_final_model', action='store_true', default=True, help='Save the final model after training completes in saved_final_models directory (default: True)')
     parser.add_argument('--project', type=str, default='mujoco-rubiks-ppo-vec', help='wandb project name')
     parser.add_argument('--run_name', type=str, default=None, help='wandb run name')
