@@ -1291,7 +1291,7 @@ if __name__ == "__main__":
     parser.add_argument('--enable_viewer', action='store_true', help='Enable MuJoCo viewer')
     parser.add_argument('--visualize_collision_boxes', action='store_true', help='Visualize collision boxes')
     parser.add_argument('--rotation_sequence', type=str, nargs='*', default=None,
-                        help='Rotation sequence of face names (e.g., --rotation_sequence blue)')
+                        help='Rotation sequence of face names (e.g., --rotation_sequence blue red white or --rotation_sequence blue_clock red_anti_clock)')
     parser.add_argument('--enable_gravity', dest='enable_gravity', action='store_true',
                         help='Override environment gravity with default vector [0, 0, 0]')
     parser.add_argument('--disable_gravity', dest='enable_gravity', action='store_false',
