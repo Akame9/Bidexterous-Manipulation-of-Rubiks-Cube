@@ -596,19 +596,19 @@ class RubiksCubeEnvironment:
         reward = 0.0
         
         #1. Grasping reward (based on contact forces) - PRIORITY
-        grasp_reward = self._calculate_grasp_reward()
-        reward += grasp_reward #* 0.5 #0.4
+        # grasp_reward = self._calculate_grasp_reward()
+        # reward += grasp_reward #* 0.5 #0.4
         
         # # 2. Palm contact penalty (penalize palm-cube contact) - PRIORITY
-        palm_penalty = self._calculate_palm_penalty()
-        reward += palm_penalty
+        # palm_penalty = self._calculate_palm_penalty()
+        # reward += palm_penalty
         
         # 3. Displacement reward (based on cube displacement) - PRIORITY
-        displacement_reward = self._calculate_displacement_reward()
-        reward += displacement_reward
+        # displacement_reward = self._calculate_displacement_reward()
+        # reward += displacement_reward
 
         # 3. Rotation sequence reward (based on face rotation sequence) - PRIORITY
-        rotation_reward = self._calculate_rotation_reward_v3()
+        rotation_reward = self._calculate_rotation_reward()
         reward += rotation_reward
         
         # 4. Manipulation reward (based on cube rotation) - PRIORITY
@@ -843,7 +843,7 @@ class RubiksCubeEnvironment:
                     for face_name in self.face_joint_ids.keys():
                         self.face_initial_angles[face_name] = self._get_face_joint_angle(face_name)
                 # Give reward for starting rotation
-                reward += 10.0
+                reward += 1.0
                 rotation_key = f"{current_face}_start_{self.current_rotation_index}"
                 if rotation_key not in self.rotation_rewards_given:
                     self.rotation_rewards_given.add(rotation_key)
@@ -856,20 +856,20 @@ class RubiksCubeEnvironment:
                 # Conditions not met to start rotation
                 # print(f"[ROTATION_REWARD] Case: ROTATION_NOT_STARTED | Face: {current_face} | Index: {self.current_rotation_index} | Velocity: {abs(current_joint_velocity):.3f} (need >{self.rotation_start_threshold}) | Force: {force_magnitude:.3f} (need >0.5) | Reward: 0.0")
         else:
-            pass
+            #pass
             # If rotation started but stopped (low angular velocity for a while), allow restart
             # This allows the agent to try again if rotation was interrupted
-            # if abs(current_joint_velocity) < self.rotation_start_threshold * 0.5 and force_magnitude < 0.3:
-            #     # Rotation has stopped, but don't reset immediately - give it a chance to continue
-            #     # Only reset if we've accumulated very little rotation
-            #     if abs(self.rotation_angle_accumulated) < 0.1:  # Less than ~6 degrees
-            #         # print(f"[ROTATION_REWARD] Case: ROTATION_RESET | Face: {current_face} | Index: {self.current_rotation_index} | Accumulated angle too small: {abs(self.rotation_angle_accumulated):.3f} rad | Resetting rotation state")
-            #         self.rotation_started = False
-            #         self.initial_joint_angle = None
-            #         self.rotation_angle_accumulated = 0.0
-            #         self.rotation_direction_actual = 0.0
-            #         # Reset initial angles when rotation is reset
-            #         self.face_initial_angles = {}
+            if abs(current_joint_velocity) < self.rotation_start_threshold * 0.5 and force_magnitude < 0.3:
+                # Rotation has stopped, but don't reset immediately - give it a chance to continue
+                # Only reset if we've accumulated very little rotation
+                if abs(self.rotation_angle_accumulated) < 0.1:  # Less than ~6 degrees
+                    # print(f"[ROTATION_REWARD] Case: ROTATION_RESET | Face: {current_face} | Index: {self.current_rotation_index} | Accumulated angle too small: {abs(self.rotation_angle_accumulated):.3f} rad | Resetting rotation state")
+                    self.rotation_started = False
+                    self.initial_joint_angle = None
+                    self.rotation_angle_accumulated = 0.0
+                    self.rotation_direction_actual = 0.0
+                    # Reset initial angles when rotation is reset
+                    self.face_initial_angles = {}
         
         # If rotation has started, track progress
         if self.rotation_started and not self.rotation_completed:
@@ -910,13 +910,14 @@ class RubiksCubeEnvironment:
                 if self.rotation_angle_accumulated >= self.rotation_complete_threshold and direction_correct:
                     self.rotation_completed = True
                     # Big reward for completing a rotation in the correct direction
-                    reward += 100.0
+                    reward += 10.0
                     rotation_key = f"{current_face}_{'clock' if desired_direction > 0 else 'anti_clock'}_complete_{self.current_rotation_index}"
                     if rotation_key not in self.rotation_rewards_given:
                         self.rotation_rewards_given.add(rotation_key)
                     
                     # Move to next rotation in sequence
                     self.current_rotation_index += 1
+                    
                     if self.current_rotation_index < len(self.rotation_sequence):
                         # Reset for next rotation
                         next_face, next_dir = self.rotation_sequence[self.current_rotation_index]
@@ -943,7 +944,7 @@ class RubiksCubeEnvironment:
                 elif direction_correct:
                     # Small continuous reward for making progress in correct direction
                     progress = self.rotation_angle_accumulated / self.rotation_complete_threshold
-                    progress_reward = 10 * progress #0.1
+                    progress_reward = 0.1 * progress #
                     reward += progress_reward
                     # print(f"[ROTATION_REWARD] Case: ROTATION_PROGRESS | Face: {current_face} | Direction: {'clock' if desired_direction > 0 else 'anti_clock'} | Index: {self.current_rotation_index} | Angle: {np.degrees(self.rotation_angle_accumulated):.1f}° / {np.degrees(self.rotation_complete_threshold):.1f}° | Progress: {progress*100:.1f}% | Reward: +{progress_reward:.3f}")
                 # else: rotating in wrong direction, no reward
@@ -1285,12 +1286,13 @@ class RubiksCubeEnvironment:
             item_lower = item.lower().strip()
             
             # Check for _clock or _anti_clock suffix
-            if item_lower.endswith('_clock'):
+            if item_lower.endswith('_anti_clock'):
+                face = item_lower[:-11]  # Remove '_anti_clock'
+                direction = -1
+            elif item_lower.endswith('_clock'):
                 face = item_lower[:-6]  # Remove '_clock'
                 direction = 1  # +90 degrees clockwise
-            elif item_lower.endswith('_anti_clock'):
-                face = item_lower[:-11]  # Remove '_anti_clock'
-                direction = -1  # -90 degrees anti-clockwise
+              # -90 degrees anti-clockwise
             else:
                 # Backward compatibility: if no suffix, default to clockwise
                 face = item_lower
@@ -1353,12 +1355,12 @@ class RubiksCubeEnvironment:
         rotation_spec_lower = rotation_spec.lower().strip()
         
         # Extract face name and direction
-        if rotation_spec_lower.endswith('_clock'):
+        if rotation_spec_lower.endswith('_anti_clock'):
+            face = rotation_spec_lower[:-11]  # Remove '_anti_clock'
+            direction = -1
+        elif rotation_spec_lower.endswith('_clock'):
             face = rotation_spec_lower[:-6]  # Remove '_clock'
             direction = 1  # +90 degrees clockwise
-        elif rotation_spec_lower.endswith('_anti_clock'):
-            face = rotation_spec_lower[:-11]  # Remove '_anti_clock'
-            direction = -1  # -90 degrees anti-clockwise
         else:
             # Backward compatibility: if no suffix, default to clockwise
             face = rotation_spec_lower
