@@ -110,7 +110,7 @@ def main():
     env = RubiksCubeEnvironment(
         xml_path=args.xml,
         enable_viewer=True,
-        max_episode_steps=1000,
+        max_episode_steps=500,
         gravity_vector=[0.0, 0.0, 0.0]
     )
     
@@ -186,7 +186,7 @@ def main():
     print("Test completed!")
     print("="*60)
     print("\nKeeping viewer open for 5 seconds...")
-    for _ in range(500):
+    for _ in range(5000):
         env.render()
         time.sleep(0.01)
     

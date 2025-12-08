@@ -1,9 +1,9 @@
 Evaluation Results
 ==================
 
-Model: saved_models/ppo_model_1_best_rotation_no_gravity.pth
+Model: saved_models/ppo_model_2_best_2_full_rotation_no_gravity.pth
 Episodes: 2
-Deterministic: True
+Deterministic: False
 
 Results:
 Average Reward: 0.00 ± 0.00

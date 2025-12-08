@@ -55,6 +55,114 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, det
             video_writer = cv2.VideoWriter(video_path, fourcc, float(video_fps), (int(video_width), int(video_height)))
             renderer = mj.Renderer(env.model, width=int(video_width), height=int(video_height))
         state = env.initialize()
+        state_before = state.copy()
+        # Extract cube face joint positions and velocities from qpos and qvel
+        # Get joint IDs and their addresses in qpos/qvel arrays
+        cube_joint_info = {}
+        for face_name, joint_name in env.face_to_joint_map.items():
+            if face_name in env.face_joint_ids:
+                joint_id = env.face_joint_ids[face_name]
+                qpos_adr = env.model.jnt_qposadr[joint_id]
+                qvel_adr = env.model.jnt_dofadr[joint_id]
+                cube_joint_info[face_name] = {
+                    'joint_id': joint_id,
+                    'joint_name': joint_name,
+                    'qpos_adr': qpos_adr,
+                    'qvel_adr': qvel_adr
+                }
+        
+        # Extract cube joint positions and velocities from state before rotation
+        # State structure: [joint_pos(nq), joint_vel(nv), ...]
+        cube_joint_pos_before = {}
+        cube_joint_vel_before = {}
+        for face_name, info in cube_joint_info.items():
+            qpos_adr = info['qpos_adr']
+            qvel_adr = info['qvel_adr']
+            # Get joint position (for hinge joints, it's a single value)
+            cube_joint_pos_before[face_name] = state[qpos_adr]
+            # Get joint velocity
+            cube_joint_vel_before[face_name] = state[env.model.nq + qvel_adr]
+        
+        print(f"\n{'='*60}")
+        print(f"CUBE JOINT STATE BEFORE apply_rotation('white_anti_clock'):")
+        print(f"{'='*60}")
+        for face_name in sorted(cube_joint_info.keys()):
+            joint_name = cube_joint_info[face_name]['joint_name']
+            pos_deg = np.degrees(cube_joint_pos_before[face_name])
+            vel_deg = np.degrees(cube_joint_vel_before[face_name])
+            print(f"  {face_name:8s} (joint: {joint_name:3s}): Position = {cube_joint_pos_before[face_name]:8.6f} rad ({pos_deg:7.3f}°), "
+                  f"Velocity = {cube_joint_vel_before[face_name]:8.6f} rad/s ({vel_deg:7.3f}°/s)")
+        
+        # Apply rotation
+        env.apply_rotation('white_anti_clock')
+        env.apply_rotation('blue_clock')
+        
+        # env._set_neutral_pose()
+        # Get state after rotation
+        state_after = env.get_state()
+        
+        # Extract cube joint positions and velocities from state after rotation
+        cube_joint_pos_after = {}
+        cube_joint_vel_after = {}
+        for face_name, info in cube_joint_info.items():
+            qpos_adr = info['qpos_adr']
+            qvel_adr = info['qvel_adr']
+            cube_joint_pos_after[face_name] = state_after[qpos_adr]
+            cube_joint_vel_after[face_name] = state_after[env.model.nq + qvel_adr]
+        
+        print(f"\n{'='*60}")
+        print(f"CUBE JOINT STATE AFTER apply_rotation('white_anti_clock'):")
+        print(f"{'='*60}")
+        for face_name in sorted(cube_joint_info.keys()):
+            joint_name = cube_joint_info[face_name]['joint_name']
+            pos_deg = np.degrees(cube_joint_pos_after[face_name])
+            vel_deg = np.degrees(cube_joint_vel_after[face_name])
+            print(f"  {face_name:8s} (joint: {joint_name:3s}): Position = {cube_joint_pos_after[face_name]:8.6f} rad ({pos_deg:7.3f}°), "
+                  f"Velocity = {cube_joint_vel_after[face_name]:8.6f} rad/s ({vel_deg:7.3f}°/s)")
+        
+        print(f"\n{'='*60}")
+        print(f"CHANGES:")
+        print(f"{'='*60}")
+        for face_name in sorted(cube_joint_info.keys()):
+            joint_name = cube_joint_info[face_name]['joint_name']
+            pos_change = cube_joint_pos_after[face_name] - cube_joint_pos_before[face_name]
+            vel_change = cube_joint_vel_after[face_name] - cube_joint_vel_before[face_name]
+            pos_change_deg = np.degrees(pos_change)
+            vel_change_deg = np.degrees(vel_change)
+            print(f"  {face_name:8s} (joint: {joint_name:3s}): Position change = {pos_change:8.6f} rad ({pos_change_deg:7.3f}°), "
+                  f"Velocity change = {vel_change:8.6f} rad/s ({vel_change_deg:7.3f}°/s)")
+        print(f"{'='*60}\n")
+        
+        # Calculate initial changes to ALL state space elements (changes from before to after initial rotations)
+        # State structure: [joint_pos(nq), joint_vel(nv), cube_pos(3), cube_quat(4), 
+        #                    cube_lin_vel(3), cube_ang_vel(3), contact_force(3), prev_actions]
+        state_initial_changes = state_after - state_before
+        
+        # Also keep cube joint-specific changes for debugging/printing
+        cube_joint_pos_initial_changes = {}
+        cube_joint_vel_initial_changes = {}
+        for face_name in cube_joint_info.keys():
+            cube_joint_pos_initial_changes[face_name] = cube_joint_pos_after[face_name] - cube_joint_pos_before[face_name]
+            cube_joint_vel_initial_changes[face_name] = cube_joint_vel_after[face_name] - cube_joint_vel_before[face_name]
+        
+        print(f"\n{'='*60}")
+        print(f"INITIAL STATE CHANGES SUMMARY:")
+        print(f"{'='*60}")
+        print(f"  Total state dimension: {len(state_initial_changes)}")
+        print(f"  Joint positions (nq={env.model.nq}): changes in range [{np.min(state_initial_changes[:env.model.nq]):.6f}, {np.max(state_initial_changes[:env.model.nq]):.6f}]")
+        print(f"  Joint velocities (nv={env.model.nv}): changes in range [{np.min(state_initial_changes[env.model.nq:env.model.nq+env.model.nv]):.6f}, {np.max(state_initial_changes[env.model.nq:env.model.nq+env.model.nv]):.6f}]")
+        nq_nv = env.model.nq + env.model.nv
+        print(f"  Cube position (3): {state_initial_changes[nq_nv:nq_nv+3]}")
+        print(f"  Cube quaternion (4): {state_initial_changes[nq_nv+3:nq_nv+7]}")
+        print(f"  Cube linear velocity (3): {state_initial_changes[nq_nv+7:nq_nv+10]}")
+        print(f"  Cube angular velocity (3): {state_initial_changes[nq_nv+10:nq_nv+13]}")
+        print(f"  Contact force (3): {state_initial_changes[nq_nv+13:nq_nv+16]}")
+        print(f"  Previous actions ({len(env.hand_actuators)}): changes in range [{np.min(state_initial_changes[nq_nv+16:]):.6f}, {np.max(state_initial_changes[nq_nv+16:]):.6f}]")
+        print(f"{'='*60}\n")
+        
+        # Update state to the state after rotation
+        state = state_after
+        
         episode_reward = 0
         episode_length = 0
         
@@ -67,10 +175,32 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=1000, render=True, det
         print(f"{'='*60}")
         
         for step in range(max_steps):
-            # Use deterministic policy for evaluation
-            action, _, _ = agent.select_action(state, deterministic=deterministic)
+            # At the beginning of each step, subtract initial changes from ALL state elements
+            # This makes the agent see the state as if the initial changes never happened
+            # while keeping the actual simulation state intact
+            state_for_agent = state.copy()
             
-            # Take step
+            # Subtract initial changes from all state elements
+            # state_for_agent = current_state - (state_after - state_before)
+            # This effectively makes the agent see state relative to initial state_before
+            state_for_agent = state_for_agent - state_initial_changes
+            
+            # Print the cube joint positions and velocities after subtracting initial changes (for debugging)
+            if step == 0:
+                print(f"\nCube joint positions and velocities after subtracting initial changes (step 0):")
+                for face_name, info in cube_joint_info.items():
+                    qpos_adr = info['qpos_adr']
+                    qvel_adr = info['qvel_adr']
+                    pos_deg = np.degrees(state_for_agent[qpos_adr])
+                    vel_deg = np.degrees(state_for_agent[env.model.nq + qvel_adr])
+                    print(f"  {face_name:8s} (joint: {info['joint_name']:3s}): Position = {state_for_agent[qpos_adr]:8.6f} rad ({pos_deg:7.3f}°), "
+                          f"Velocity = {state_for_agent[env.model.nq + qvel_adr]:8.6f} rad/s ({vel_deg:7.3f}°/s)")
+                print()
+            
+            # Use deterministic policy for evaluation with modified state
+            action, _, _ = agent.select_action(state_for_agent, deterministic=deterministic)
+            
+            # Take step (this uses the actual simulation state, not the modified one)
             next_state, reward, done, info = env.take_step(action)
             
             # Track specific reward values
@@ -226,8 +356,6 @@ def main():
                        help='Device (auto, cpu, cuda, cuda:0, etc.)')
     parser.add_argument('--gpu_id', type=int, default=0,
                        help='GPU ID to use')
-    parser.add_argument('--rotation_sequence', type=str, default=None,
-                       help='Comma-separated list of face names to rotate (e.g., "red,blue,white")')
     
     args = parser.parse_args()
     

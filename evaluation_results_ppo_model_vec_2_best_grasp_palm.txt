@@ -1,0 +1,17 @@
+Evaluation Results
+==================
+
+Model: saved_models/ppo_model_vec_2_best_grasp_palm.pth
+Episodes: 5
+Deterministic: False
+
+Results:
+Average Reward: 233.76 ± 9.70
+Average Length: 500.00 ± 0.00
+
+Episode Details:
+Episode 1: Reward=222.81, Length=500
+Episode 2: Reward=245.00, Length=500
+Episode 3: Reward=245.00, Length=500
+Episode 4: Reward=232.00, Length=500
+Episode 5: Reward=224.00, Length=500

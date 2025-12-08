@@ -6,12 +6,12 @@ Episodes: 5
 Deterministic: False
 
 Results:
-Average Reward: 12.82 ± 8.86
-Average Length: 414.40 ± 113.56
+Average Reward: 46.40 ± 143.06
+Average Length: 500.00 ± 0.00
 
 Episode Details:
-Episode 1: Reward=22.61, Length=500
-Episode 2: Reward=2.66, Length=355
-Episode 3: Reward=12.18, Length=500
-Episode 4: Reward=23.12, Length=500
-Episode 5: Reward=3.52, Length=217
+Episode 1: Reward=-175.20, Length=500
+Episode 2: Reward=182.56, Length=500
+Episode 3: Reward=-32.75, Length=500
+Episode 4: Reward=214.93, Length=500
+Episode 5: Reward=42.47, Length=500
