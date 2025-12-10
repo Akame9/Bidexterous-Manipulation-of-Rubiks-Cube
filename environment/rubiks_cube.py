@@ -856,20 +856,20 @@ class RubiksCubeEnvironment:
                 # Conditions not met to start rotation
                 # print(f"[ROTATION_REWARD] Case: ROTATION_NOT_STARTED | Face: {current_face} | Index: {self.current_rotation_index} | Velocity: {abs(current_joint_velocity):.3f} (need >{self.rotation_start_threshold}) | Force: {force_magnitude:.3f} (need >0.5) | Reward: 0.0")
         else:
-            #pass
+            pass
             # If rotation started but stopped (low angular velocity for a while), allow restart
             # This allows the agent to try again if rotation was interrupted
-            if abs(current_joint_velocity) < self.rotation_start_threshold * 0.5 and force_magnitude < 0.3:
-                # Rotation has stopped, but don't reset immediately - give it a chance to continue
-                # Only reset if we've accumulated very little rotation
-                if abs(self.rotation_angle_accumulated) < 0.1:  # Less than ~6 degrees
-                    # print(f"[ROTATION_REWARD] Case: ROTATION_RESET | Face: {current_face} | Index: {self.current_rotation_index} | Accumulated angle too small: {abs(self.rotation_angle_accumulated):.3f} rad | Resetting rotation state")
-                    self.rotation_started = False
-                    self.initial_joint_angle = None
-                    self.rotation_angle_accumulated = 0.0
-                    self.rotation_direction_actual = 0.0
-                    # Reset initial angles when rotation is reset
-                    self.face_initial_angles = {}
+            # if abs(current_joint_velocity) < self.rotation_start_threshold * 0.5 and force_magnitude < 0.3:
+            #     # Rotation has stopped, but don't reset immediately - give it a chance to continue
+            #     # Only reset if we've accumulated very little rotation
+            #     if abs(self.rotation_angle_accumulated) < 0.1:  # Less than ~6 degrees
+            #         # print(f"[ROTATION_REWARD] Case: ROTATION_RESET | Face: {current_face} | Index: {self.current_rotation_index} | Accumulated angle too small: {abs(self.rotation_angle_accumulated):.3f} rad | Resetting rotation state")
+            #         self.rotation_started = False
+            #         self.initial_joint_angle = None
+            #         self.rotation_angle_accumulated = 0.0
+            #         self.rotation_direction_actual = 0.0
+            #         # Reset initial angles when rotation is reset
+            #         self.face_initial_angles = {}
         
         # If rotation has started, track progress
         if self.rotation_started and not self.rotation_completed:
@@ -910,7 +910,7 @@ class RubiksCubeEnvironment:
                 if self.rotation_angle_accumulated >= self.rotation_complete_threshold and direction_correct:
                     self.rotation_completed = True
                     # Big reward for completing a rotation in the correct direction
-                    reward += 10.0
+                    reward += 50.0
                     rotation_key = f"{current_face}_{'clock' if desired_direction > 0 else 'anti_clock'}_complete_{self.current_rotation_index}"
                     if rotation_key not in self.rotation_rewards_given:
                         self.rotation_rewards_given.add(rotation_key)
@@ -1181,6 +1181,145 @@ class RubiksCubeEnvironment:
         else:
             # Rotation not started - return 0
             return 0.0
+    
+    def _calculate_rotation_reward_v4(self) -> float:
+        """
+        Calculate penalty for rotation sequence completion (v4).
+        - Gives only penalty values (no rewards)
+        - Penalty is based on the length of rotation_sequence
+        - As rotations progress (completing one rotation at a time), penalty decreases
+        - No need to consider rotation start - penalty is based on current angle vs target angle
+        - For each face in the sequence, penalty decreases as angle reduces and reaches target angle
+        
+        Example: If two rotations are given in the sequence:
+        - Initial penalty is high as both faces are far from their desired angle
+        - As the rotation for the first face starts, penalty starts reducing
+        - Once the first face is complete and the model starts rotating the next face,
+          the penalty for the second face also starts reducing
+        
+        Returns:
+            Negative penalty value (penalty decreases as rotations progress toward targets)
+        """
+        # If no rotation sequence is set, return 0
+        if not self.rotation_sequence:
+            return 0.0
+        
+        # Initialize initial angles for all faces in the sequence if not already stored
+        # Store initial angles when first called (at episode start)
+        # Check if we need to initialize angles for any faces in the sequence
+        for face_name, _ in self.rotation_sequence:
+            if face_name in self.face_joint_ids:
+                # Initialize if not already stored (allows re-initialization on new episode)
+                if face_name not in self.face_initial_angles:
+                    self.face_initial_angles[face_name] = self._get_face_joint_angle(face_name)
+        
+        # Target rotation angle is 90 degrees (π/2 radians)
+        target_angle = self.rotation_complete_threshold  # π/2 radians (90 degrees)
+        completion_threshold = target_angle * 0.05  # 5% threshold (~4.5 degrees)
+        
+        # First pass: find the last completed face in sequence order
+        # Only consider faces that come after the last completed face
+        # We check faces sequentially - if a face is not completed, we stop
+        last_completed_index = -1  # -1 means no faces completed yet
+        
+        # Check faces sequentially starting from the next face after last_completed_index
+        while True:
+            next_idx = last_completed_index + 1
+            if next_idx >= len(self.rotation_sequence):
+                break  # All faces checked
+            
+            face_name, desired_direction = self.rotation_sequence[next_idx]
+            
+            if face_name not in self.face_joint_ids or face_name not in self.face_initial_angles:
+                break  # Can't check this face, stop
+            
+            current_joint_angle = self._get_face_joint_angle(face_name)
+            initial_joint_angle = self.face_initial_angles[face_name]
+            target_joint_angle = initial_joint_angle + desired_direction * target_angle
+            
+            angle_diff = target_joint_angle - current_joint_angle
+            # Handle angle wrapping
+            while angle_diff > np.pi:
+                angle_diff -= 2 * np.pi
+            while angle_diff < -np.pi:
+                angle_diff += 2 * np.pi
+            
+            distance_from_target = abs(angle_diff)
+            
+            # Check if this face is completed
+            if distance_from_target <= completion_threshold:
+                # Face is completed - mark it and continue to next face
+                last_completed_index = next_idx
+            else:
+                # Face is not completed - stop checking (sequential requirement)
+                break
+        
+        # Calculate base penalty based on remaining incomplete faces
+        # Only consider faces after the last completed face
+        remaining_faces = len(self.rotation_sequence) - (last_completed_index + 1)
+        base_penalty_per_face = 1.0 * remaining_faces  # Scale base penalty with remaining incomplete faces
+        
+        # If all faces are completed, return zero penalty
+        if remaining_faces == 0:
+            return 0.0
+        
+        total_penalty = 0.0
+        
+        # Calculate penalty only for faces after the last completed face
+        # This respects the sequence order
+        for idx, (face_name, desired_direction) in enumerate(self.rotation_sequence):
+            # Skip faces that have already been completed (before last_completed_index)
+            if idx <= last_completed_index:
+                continue
+            
+            # Check if joint exists for this face
+            if face_name not in self.face_joint_ids:
+                continue
+            
+            # Skip if initial angle not stored (shouldn't happen, but safety check)
+            if face_name not in self.face_initial_angles:
+                continue
+            
+            # Get current and initial joint angles
+            current_joint_angle = self._get_face_joint_angle(face_name)
+            initial_joint_angle = self.face_initial_angles[face_name]
+            
+            # Calculate target angle for this face
+            # Target = initial angle + desired_direction * 90 degrees
+            target_joint_angle = initial_joint_angle + desired_direction * target_angle
+            
+            # Calculate the angle difference from current to target
+            angle_diff = target_joint_angle - current_joint_angle
+            
+            # Handle angle wrapping (normalize to [-π, π] range)
+            while angle_diff > np.pi:
+                angle_diff -= 2 * np.pi
+            while angle_diff < -np.pi:
+                angle_diff += 2 * np.pi
+            
+            # Calculate absolute distance from target
+            distance_from_target = abs(angle_diff)
+            
+            # Check if this face has reached its target (within small threshold)
+            if distance_from_target <= completion_threshold:
+                # Face has reached target - no penalty for this face
+                face_penalty = 0.0
+            else:
+                # Normalize distance by target angle to get penalty in [0, 1] range
+                # When distance_from_target = 0, normalized_distance = 0 (no penalty)
+                # When distance_from_target = target_angle, normalized_distance = 1 (full penalty)
+                # If distance > target_angle, normalized_distance > 1 (extra penalty)
+                normalized_distance = distance_from_target / target_angle
+                
+                # Calculate penalty for this face
+                # Penalty decreases linearly as we approach target
+                face_penalty = base_penalty_per_face * normalized_distance
+            
+            # Add to total penalty
+            total_penalty += face_penalty
+        
+        # Return negative penalty (penalty values are negative)
+        return -total_penalty
     
     def _calculate_wrong_face_rotation_penalty(self, current_target_face: str) -> float:
         """
