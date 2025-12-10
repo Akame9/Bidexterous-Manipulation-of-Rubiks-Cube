@@ -342,6 +342,7 @@ class RubiksCubeEnvironment:
             
             # Forward kinematics to update world positions
             mj.mj_forward(self.model, self.data)
+        
     
     def get_state(self) -> np.ndarray:
         """
@@ -1495,13 +1496,16 @@ class RubiksCubeEnvironment:
         
         # Extract face name and direction
         if rotation_spec_lower.endswith('_anti_clock'):
+            print(f"Anti-clockwise rotation: {rotation_spec_lower}")
             face = rotation_spec_lower[:-11]  # Remove '_anti_clock'
             direction = -1
         elif rotation_spec_lower.endswith('_clock'):
             face = rotation_spec_lower[:-6]  # Remove '_clock'
             direction = 1  # +90 degrees clockwise
+          # -90 degrees anti-clockwise
         else:
             # Backward compatibility: if no suffix, default to clockwise
+            print(f"No suffix: {rotation_spec_lower}")
             face = rotation_spec_lower
             direction = 1  # Default to clockwise
         
@@ -1517,26 +1521,160 @@ class RubiksCubeEnvironment:
         
         # Get the joint ID and calculate target angle
         joint_id = self.face_joint_ids[face]
-        target_angle = direction * (np.pi / 2.0)  # ±90 degrees (±π/2 radians)
+        
+        # Debug: Check joint type and properties
+        joint_type = self.model.jnt_type[joint_id]
+        joint_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_JOINT, joint_id)
+        print(f"DEBUG: Joint ID: {joint_id}, Name: {joint_name}, Type: {joint_type} (1=hinge, 2=slide, 3=free, 4=ball)")
+        
+        # Get the joint axis direction to account for negative axis joints
+        # Joints with negative axes (nX, nY, nZ) need sign flip for rotation direction
+        joint_axis = self.model.jnt_axis[joint_id]
+        # Find the non-zero component and get its sign
+        non_zero_idx = np.nonzero(joint_axis)[0]
+        if len(non_zero_idx) > 0:
+            axis_sign = np.sign(joint_axis[non_zero_idx[0]])
+        else:
+            axis_sign = 1.0  # Default to positive if axis is zero (shouldn't happen)
+        
+        print(f"DEBUG: Joint axis: {joint_axis}, Non-zero index: {non_zero_idx}, Axis sign: {axis_sign}")
+        
+        # Calculate target angle: multiply by axis_sign to account for joint axis direction
+        # For joints with negative axes, we need to flip the rotation direction
+        target_angle = direction * axis_sign * (np.pi / 2.0)  # ±90 degrees (±π/2 radians)
         
         # Get the current joint angle
-        qpos_adr = self.model.jnt_qposadr[joint_id]
+        qpos_adr = self.model.jnt_qposadr[joint_id]# Number of qpos elements for this joint
+        print(f"DEBUG: qpos address: {qpos_adr}")
         current_angle = self.data.qpos[qpos_adr]
         
-        # Set the new joint angle (relative to current angle for cumulative rotations)
+        # Get the body ID for this face to check its transform
+        joint_body_id = self.model.jnt_bodyid[joint_id]
+        joint_body_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, joint_body_id)
+        print(f"DEBUG: Joint body ID: {joint_body_id}, Name: {joint_body_name}")
+        
+        # Get body transform before rotation
+        body_xpos_before = self.data.xpos[joint_body_id].copy()
+        body_xquat_before = self.data.xquat[joint_body_id].copy()
+        body_xmat_before = self.data.xmat[joint_body_id].copy()
+        print(f"DEBUG: Body position before: {body_xpos_before}")
+        print(f"DEBUG: Body quaternion before: {body_xquat_before}")
+        
+        # Calculate target angle (relative to current angle for cumulative rotations)
         new_angle = current_angle + target_angle
-        self.data.qpos[qpos_adr] = new_angle
+        print(f"Face: {face}, Direction: {direction}, Axis sign: {axis_sign:.1f}, Current angle: {np.degrees(current_angle):.1f}°, Target angle: {np.degrees(target_angle):.1f}°, New angle: {np.degrees(new_angle):.1f}°")
+        
+        # Find the actuator ID for this face
+        actuator_id = None
+        for i, name in enumerate(self.actuator_names):
+            if name == face:
+                actuator_id = i
+                break
+        
+        if actuator_id is None:
+            print(f"Error: Actuator for face '{face}' not found.")
+            return False
+        
+        # Get actuator control range and type
+        # Note: Control values are in radians (XML specifies angle="radian")
+        ctrl_range = self.model.actuator_ctrlrange[actuator_id]
+        actuator_type = self.model.actuator_gaintype[actuator_id]
+        print(f"DEBUG: Actuator ID: {actuator_id}, Type: {actuator_type}, Control range: [{ctrl_range[0]:.4f}, {ctrl_range[1]:.4f}] rad "
+              f"([{np.degrees(ctrl_range[0]):.3f}°, {np.degrees(ctrl_range[1]):.3f}°])")
         
         # Reset joint velocity to zero to avoid residual motion
         qvel_adr = self.model.jnt_dofadr[joint_id]
         self.data.qvel[qvel_adr] = 0.0
         
-        # Update forward kinematics to reflect the new joint position
+        # Disable all other cube actuators to prevent interference
+        for other_actuator_id in self.cube_actuators:
+            if other_actuator_id != actuator_id:
+                self.data.ctrl[other_actuator_id] = 0.0
+        
+        # Control loop: Move actuator incrementally toward target angle
+        # Use proportional control: control_value = Kp * error
+        # where error = target_angle - current_angle
+        Kp = 10.0  # Proportional gain (adjust based on actuator response)
+        tolerance = 0.0  # Tolerance in radians (zero tolerance - will run until max_steps or exact match)
+        max_steps = 500  # Maximum steps to prevent infinite loops
+        
+        print(f"DEBUG: Starting control loop to reach target angle {np.degrees(new_angle):.1f}° ({new_angle:.4f} rad)")
+        
+        for step_idx in range(max_steps):
+            # Get current joint angle
+            current_angle_now = self.data.qpos[qpos_adr]
+            
+            # Calculate error (target - current)
+            angle_error = new_angle - current_angle_now
+            
+            # Handle angle wrapping (normalize error to [-π, π])
+            while angle_error > np.pi:
+                angle_error -= 2 * np.pi
+            while angle_error < -np.pi:
+                angle_error += 2 * np.pi
+            
+            # Check if we've reached the target
+            if abs(angle_error) < tolerance:
+                print(f"DEBUG: Target reached at step {step_idx}! Current: {np.degrees(current_angle_now):.1f}°, "
+                      f"Target: {np.degrees(new_angle):.1f}°, Error: {np.degrees(angle_error):.3f}°")
+                break
+            
+            # Calculate control value using proportional control
+            # Control is proportional to error, with sign matching desired direction
+            control_value = Kp * angle_error
+            
+            # Clip control value to actuator range if it has limits
+            # But allow larger values if needed for faster convergence
+            if ctrl_range[0] != ctrl_range[1]:  # If range is not zero (unlimited)
+                # Use a larger effective range for control, but clip extreme values
+                effective_max = max(abs(ctrl_range[0]), abs(ctrl_range[1])) * 2.0
+                control_value = np.clip(control_value, -effective_max, effective_max)
+            
+            # Apply control value to actuator
+            self.data.ctrl[actuator_id] = control_value
+            
+            # Step physics simulation
+            mj.mj_step(self.model, self.data)
+            
+            # Sync viewer periodically for visualization
+            if self.enable_viewer and self.viewer is not None:
+                if step_idx % 5 == 0:  # Sync every 5 steps for smoother visualization
+                    self.viewer.sync()
+            
+            # Print progress every 50 steps
+            if step_idx % 50 == 0:
+                print(f"DEBUG: Step {step_idx}: Current angle: {np.degrees(current_angle_now):.1f}°, "
+                      f"Error: {np.degrees(angle_error):.3f}°, Control: {control_value:.4f}")
+        
+        # Set actuator to zero after reaching target to maintain position
+        self.data.ctrl[actuator_id] = 0.0
+        
+        # Final forward kinematics update
         mj.mj_forward(self.model, self.data)
         
-        # Optionally step the simulation a few times to settle
-        for _ in range(10):
-            mj.mj_step(self.model, self.data)
+        # Verify final angle
+        final_angle = self.data.qpos[qpos_adr]
+        final_error = new_angle - final_angle
+        while final_error > np.pi:
+            final_error -= 2 * np.pi
+        while final_error < -np.pi:
+            final_error += 2 * np.pi
+        print(f"DEBUG: Final angle: {np.degrees(final_angle):.1f}°, Target: {np.degrees(new_angle):.1f}°, "
+              f"Final error: {np.degrees(final_error):.3f}°")
+        
+        # Get body transform after rotation
+        body_xpos_after = self.data.xpos[joint_body_id].copy()
+        body_xquat_after = self.data.xquat[joint_body_id].copy()
+        final_joint_angle = self.data.qpos[qpos_adr]
+        print(f"DEBUG: Final joint angle: {np.degrees(final_joint_angle):.1f}°")
+        print(f"DEBUG: Body position after: {body_xpos_after}")
+        print(f"DEBUG: Body quaternion after: {body_xquat_after}")
+        print(f"DEBUG: Position changed: {not np.allclose(body_xpos_before, body_xpos_after)}")
+        print(f"DEBUG: Quaternion changed: {not np.allclose(body_xquat_before, body_xquat_after)}")
+        
+        # Final viewer sync
+        if self.enable_viewer and self.viewer is not None:
+            self.viewer.sync()
         
         print(f"Applied rotation: {rotation_spec} -> {face} face rotated {direction * 90}° "
               f"(joint angle: {np.degrees(current_angle):.1f}° -> {np.degrees(new_angle):.1f}°)")
@@ -1653,7 +1791,7 @@ if __name__ == "__main__":
                        help='Enable collision box visualization')
     parser.add_argument('--xml-path', type=str, default='xmls/bidexhands.xml',
                        help='Path to MuJoCo XML file')
-    parser.add_argument('--max-steps', type=int, default=100000,
+    parser.add_argument('--max-steps', type=int, default=500,
                        help='Maximum steps per episode')
     parser.add_argument('--settle-on-reset', action='store_true',
                        help='Settle simulation on reset')
