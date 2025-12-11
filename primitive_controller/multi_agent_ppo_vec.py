@@ -1100,6 +1100,8 @@ if __name__ == "__main__":
     parser.add_argument('--save_best_only', action='store_true', help='Save only the best model')
     parser.add_argument('--enable_viewer', action='store_true', help='Enable MuJoCo viewer')
     parser.add_argument('--visualize_collision_boxes', action='store_true', help='Visualize collision boxes')
+    parser.add_argument('--rotation_sequence', type=str, nargs='*', default=None,
+                        help='Rotation sequence of face names (e.g., --rotation_sequence blue)')
     parser.add_argument('--enable_gravity', dest='enable_gravity', action='store_true', help='Override environment gravity')
     parser.add_argument('--disable_gravity', dest='enable_gravity', action='store_false', help='Disable gravity override')
     parser.set_defaults(enable_gravity=False)
@@ -1152,12 +1154,18 @@ if __name__ == "__main__":
         })
     
     # Create environment factory
+    rotation_sequence = args.rotation_sequence if args.rotation_sequence else None
+    if rotation_sequence:
+        print(f"Rotation sequence: {rotation_sequence}")
+
+    # Create environment factory
     def make_env():
         return RubiksCubeEnvironment(
             xml_path=args.xml,
             enable_viewer=args.enable_viewer,
             visualize_collision_boxes=args.visualize_collision_boxes,
             enable_gravity=args.enable_gravity,
+            rotation_sequence=rotation_sequence,
             max_episode_steps=args.max_steps
         )
     
